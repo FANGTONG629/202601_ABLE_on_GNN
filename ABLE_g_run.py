@@ -84,7 +84,7 @@ parser.add_argument('--draw', type=int, default=0, help='draw dgl')
 Example:
 python ABLE_g_run.py --device_id 0 --dataset_name aug_citation --radius 0.5 --num_epochs 25 --num_explain 100 --num_neighbor 10 --num_runs 4 --lambda_1 0.01 --lambda_2 0.1
 python ABLE_g_run.py --device_id 0 --dataset_name lastfm --radius 0.3 --num_epochs 25 --num_explain 100 --num_neighbor 10 --num_runs 4
-python ABLE_g_run.py --device_id 0 --dataset_name ACM --radius 0.9 --num_epochs 25 --num_explain 100 --num_neighbor 10 --num_runs 4 --num_hops 2 --emb_dim 64 --hidden_dim 64 --out_dim 64 --lambda_1 0.01 --lambda_2 0.001
+python ABLE_g_run.py --device_id 0 --dataset_name ACM --radius 0.9 --num_epochs 25 --num_explain 100 --num_neighbor 10 --num_runs 4 --num_hops 2 --emb_dim 64 --hidden_dim 64 --out_dim 64 --lambda_1 0.01 --lambda_2 0.1
 
 '''
 

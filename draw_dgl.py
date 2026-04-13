@@ -187,10 +187,6 @@ def draw_able_graph_eweight(exres, dataset_name, img_name=None, save_dir="./outp
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if img_name is None:
-        img_name = f"delta_G_{dataset_name}_{timestamp}"
-
     # 2. 提取数据结构 (参考 exres 结构)
     # 默认绘制第一对对抗样本中的 G_M (反事实解释图)
     adv_pairs = exres.get("adv_pairs", [])
@@ -198,52 +194,11 @@ def draw_able_graph_eweight(exres, dataset_name, img_name=None, save_dir="./outp
         print("No adversarial pairs found in exres.")
         return
 
-    sample_pair = adv_pairs[0]
-    g = sample_pair['G_M']['graph']
-    # 计算差值：mask_delta = G_M_mask - None_mask (即 G_M_mask - 1), 结果为负表示该边在 G_M 中被削弱了
-    #mask_delta = get_mask_delta(g, mask1=None, mask2=sample_sample_pair['G_M']['edge_mask'])
-    mask_delta = get_mask_delta(g, mask1=sample_pair['G_M']['edge_mask'], mask2=sample_pair['G_W']['edge_mask'])
-
-    # 3. 构建 NetworkX 图
-    G = nx.Graph()
-    node_types = g.ntypes
-    for ntype in node_types:
-        # 添加节点并标记类型
-        for i in range(g.num_nodes(ntype)):
-            G.add_node(f"{ntype}_{i}", node_type=ntype)
-
-    # 4. 构建边并映射权重 (负数桶，正数桶，以及 0)
-    bins = [-1.0, -0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
-    edge_buckets = {b: [] for b in bins}
-
-    # 一次性将所有 mask 搬到 CPU，避免循环内 item() 造成的 IO 延迟
-    cpu_masks = {etype: m.detach().cpu().numpy() for etype, m in mask_delta.items()}
-
-    for etype in g.canonical_etypes:
-        u_ntype, rel, v_ntype = etype
-        src, dst = g.edges(form='uv', etype=etype)
-        mask = cpu_masks.get(etype)
-
-        for i, (u, v) in enumerate(zip(src.tolist(), dst.tolist())):
-            m_val = float(mask[i])
-            # --- 剪枝策略：小于 0.35 直接丢弃 ---
-            if abs(m_val) < 0.35: continue
-            u_name, v_name = f"{u_ntype}_{u}", f"{v_ntype}_{v}"
-            G.add_edge(u_name, v_name) # 只有不被剪枝的边才加入 G
-            # --- 分桶逻辑 ---
-            for b in bins:
-                if m_val <= b:
-                    edge_buckets[b].append((u_name, v_name))
-                    break
-
-    # 5. 布局与配色 (使用你要求的甜美色系)
-    pos = nx.spring_layout(G, k=0.5, iterations=30, seed=42)
-    plt.figure(figsize=(10, 10))
-
+    node_types = adv_pairs[0]['G_M']['graph'].ntypes
     if dataset_name == 'lastfm':
         color_map = {
-            'artist': '#9EBBD7',  # 雾霾天蓝 (Dusty Baby Blue)
-            'user': '#A7CFAB'  # 灰调薄荷绿 (Grayish Mint Green)
+            'user': '#9EBBD7',  # 雾霾天蓝 (Dusty Baby Blue)
+            'artist': '#A7CFAB'  # 灰调薄荷绿 (Grayish Mint Green)
         }
     elif dataset_name == 'aug_citation':
         color_map = {
@@ -261,56 +216,85 @@ def draw_able_graph_eweight(exres, dataset_name, img_name=None, save_dir="./outp
     else:
         color_map = {ntype: plt.cm.Pastel1(i) for i, ntype in enumerate(node_types)}
 
-    # 6. 绘制节点
-    for node, attr in G.nodes(data=True):
-        ntype = attr['node_type']
-        if G.degree(node) == 0:
-            G.nodes[node]['final_color'] = 'white' # 逻辑：度为 0 的节点只画黑框（'none'），有边的点画颜色
-            G.nodes[node]['edge_color'] = 'black'
-        else:
-            G.nodes[node]['final_color'] = color_map.get(ntype, '#D3D3D3')
-            G.nodes[node]['edge_color'] = 'white'
-    for ntype in node_types:
-        nodelist = [n for n, attr in G.nodes(data=True) if attr['node_type'] == ntype]
-        if not nodelist: continue
-        ncolors = [G.nodes[n]['final_color'] for n in nodelist]
-        ecolors = [G.nodes[n]['edge_color'] for n in nodelist]
-        nx.draw_networkx_nodes(G, pos, nodelist=nodelist,
-                               node_color=ncolors,
-                               label=None, node_size=150,
-                               edgecolors=ecolors, linewidths=0.5, alpha=0.8)
+    # 开始遍历所有样本对
+    for pair in adv_pairs:
+        idx = pair['idx']
+        g = pair['G_M']['graph']
 
-    # 7. 绘制边 (分批绘制以支持独立的 alpha)
-    for b in bins:
-        if edge_buckets[b]: # 线宽根据桶的上限动态计算，例如 0.2 桶宽 0.18，1.0 桶宽 0.5
-            c = 'red' if b < 0 else 'gray'
-            current_width = 0.2 + 0.4 * abs(b)
-            nx.draw_networkx_edges(G, pos,
-                                   edgelist=edge_buckets[b],
-                                   width=current_width,
-                                   alpha=max(0.2, abs(b)),
-                                   edge_color=c)
+        # 定义两个绘图子任务：(任务名, mask1, mask2, 剪枝阈值)
+        tasks = [
+            (f"none_gm_{idx}", None, pair['G_M']['edge_mask'], 0.8),
+            (f"gm_gw_{idx}", pair['G_M']['edge_mask'], pair['G_W']['edge_mask'], 0.4)
+        ]
 
-    # 8. 绘制标签与图例
-    nx.draw_networkx_labels(G, pos, font_size=6, font_color="black", alpha=0.7)
-    legend_elements = [ # 手动构建和图中节点样式一模一样的图例
-        plt.Line2D([0], [0], marker='o', color='w',
-                   label=ntype,
-                   markerfacecolor=color_map.get(ntype, '#D3D3D3'),
-                   markersize=12,
-                   markeredgecolor='white',
-                   markeredgewidth=0.5)
-        for ntype in node_types if ntype in color_map
-    ]
-    plt.legend(handles=legend_elements, loc='upper right', frameon=True) # 使用自定义条目替代自动生成的图例
-    plt.title(f"Mask Delta (G_M - Neighbor): {dataset_name}\nRed: Weakened, Black: Strengthened")
-    plt.axis('off')
+        for task_name, m1, m2, prune_threshold in tasks:
+            # 2. 计算差值掩码
+            mask_delta = get_mask_delta(g, mask1=m1, mask2=m2)
 
-    # 9. 保存与显示
-    save_path = os.path.join(save_dir, f"{img_name}.png")
-    plt.savefig(save_path, bbox_inches='tight', dpi=300)
-    print(f"Graph visualization saved to: {save_path}")
-    plt.show()
+            # 3. 构建 NetworkX 图
+            G = nx.Graph()
+            for ntype in node_types:
+                for i in range(g.num_nodes(ntype)):
+                    G.add_node(f"{ntype}_{i}", node_type=ntype)
+
+            # 4. 构建边并映射权重
+            bins = [-1.0, -0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+            edge_buckets = {b: [] for b in bins}
+            cpu_masks = {etype: m.detach().cpu().numpy() for etype, m in mask_delta.items()}
+
+            for etype in g.canonical_etypes:
+                u_nt, _, v_nt = etype
+                src, dst = g.edges(form='uv', etype=etype)
+                mask = cpu_masks.get(etype)
+                for i, (u, v) in enumerate(zip(src.tolist(), dst.tolist())):
+                    m_val = float(mask[i])
+                    if abs(m_val) < prune_threshold: continue  # 动态剪枝
+                    u_n, v_n = f"{u_nt}_{u}", f"{v_nt}_{v}"
+                    G.add_edge(u_n, v_n)
+                    for b in bins:
+                        if m_val <= b:
+                            edge_buckets[b].append((u_n, v_n))
+                            break
+
+            # 5. 绘图
+            pos = nx.spring_layout(G, k=0.3, iterations=30, seed=42)
+            plt.figure(figsize=(10, 10))
+
+            # 6. 绘制节点
+            for node, attr in G.nodes(data=True):
+                ntype = attr['node_type']
+                G.nodes[node]['fc'] = 'white' if G.degree(node) == 0 else color_map.get(ntype, '#D3D3D3')
+                G.nodes[node]['ec'] = 'gray' if G.degree(node) == 0 else 'white'
+                G.nodes[node]['alp'] = 0.1 if G.degree(node) == 0 else 0.8
+
+            for ntype in node_types:
+                nodelist = [n for n, attr in G.nodes(data=True) if attr['node_type'] == ntype]
+                if not nodelist: continue
+                nx.draw_networkx_nodes(G, pos, nodelist=nodelist,
+                                       node_color=[G.nodes[n]['fc'] for n in nodelist],
+                                       edgecolors=[G.nodes[n]['ec'] for n in nodelist],
+                                       node_size=150, linewidths=0.5, alpha=[G.nodes[n]['alp'] for n in nodelist])
+
+            # 7. 绘制边
+            for b in bins:
+                if edge_buckets[b]:
+                    c = 'red' if b < 0 else 'gray'
+                    nx.draw_networkx_edges(G, pos, edgelist=edge_buckets[b],
+                                           width=0.2 + 0.4 * abs(b), alpha=max(0.2, abs(b)), edge_color=c)
+
+            # 8. 标签与图例
+            #nx.draw_networkx_labels(G, pos, font_size=6, font_color="black", alpha=0.7)
+            legend_elements = [plt.Line2D([0], [0], marker='o', color='w', label=nt,
+                                      markerfacecolor=color_map.get(nt, '#D3D3D3'),
+                                      markersize=12, markeredgecolor='white', markeredgewidth=0.5)
+                               for nt in node_types if nt in color_map]
+            plt.legend(handles=legend_elements, loc='upper right', frameon=True)
+            plt.title(f"Task: {task_name} | Dataset: {dataset_name}\nRed: Weakened, Gray: Strengthened")
+            plt.axis('off')
+
+            # 9. 保存
+            plt.savefig(os.path.join(save_dir, f"{task_name}_{dataset_name}.png"), bbox_inches='tight', dpi=300)
+            plt.close()
 
 
 def draw_able_graph_on_ax(

@@ -1335,8 +1335,8 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
                 }
                 sample_summary_data.append(sample_summary)
                 if is_save_explanation:
-                    #visualize_neighborhood_tsne(model, exres)
-                    draw_able_graph_eweight(exres, dataset_name)
+                    visualize_neighborhood_tsne(model, exres)
+                    #draw_able_graph_eweight(exres, dataset_name)
                 else:
                     print(print("\n[INFO] skipping explanation_graph export."))
             else:
