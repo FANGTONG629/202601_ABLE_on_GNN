@@ -163,6 +163,10 @@ def load_dataset(dataset_dir, dataset_name, val_ratio, test_ratio):
     elif 'lastfm' in dataset_name:
         src_ntype, tgt_ntype = 'user', 'artist'
         pred_etype = 'likes'
+    elif 'ACM' in dataset_name:
+        src_ntype, tgt_ntype = 'paper', 'field'
+        pred_etype = 'pf'
+
 
     # pred_etype = 'likes'
     neg = 'src_tgt_neg'

@@ -60,6 +60,11 @@ elif 'lastfm' in args.dataset_name:
     args.src_ntype = 'user'
     args.tgt_ntype = 'artist'
     args.pred_etype = 'likes'
+
+elif 'ACM' in args.dataset_name:
+    args.src_ntype = 'paper'
+    args.tgt_ntype = 'field'
+    args.pred_etype = 'pf'
     
 if torch.cuda.is_available() and args.device_id >= 0:
     device = torch.device('cuda', index=args.device_id)
@@ -136,6 +141,8 @@ mp_g, train_pos_g, train_neg_g, val_pos_g, val_neg_g, test_pos_g, test_neg_g = [
 
 for ntype in mp_g.ntypes:
     mp_g.nodes[ntype].data['h0'] = 0.5 * torch.randn(mp_g.num_nodes(ntype), args.emb_dim).to(device)
+
+print(mp_g)
 
 encoder = HeteroRGCN(mp_g, args.emb_dim, args.hidden_dim, args.out_dim)
 model = HeteroLinkPredictionModel(encoder, args.src_ntype, args.tgt_ntype, args.link_pred_op, **pred_kwargs)

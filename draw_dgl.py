@@ -253,11 +253,18 @@ def draw_able_graph_on_ax(
         for nid in range(ghetero.num_nodes(ntype)):
             G.add_node((ntype, nid), node_type=ntype)
 
-    # ===== 边类型颜色映射 =====
+    # ===== 边和节点类型颜色映射 =====
     edge_color_map = {
-        ('user', 'likes', 'artist'): 'orange',  # 预测边类型
+        ('user', 'likes', 'artist'): 'orange', # 预测边类型
+        ('author', 'likes', 'paper'): 'orange',
+        ('paper', 'pf', 'field'): 'orange',
         ('user', 'friends', 'user'): 'cyan',  # 用户-用户关系
         ('user', 'of', 'artist'): 'magenta',  # 艺术家-艺术家关系
+    }
+    node_color_map = {
+        "user": "lightgreen",
+        "artist": "lightcoral",
+        "attr": "skyblue",
     }
 
     # 为没有预定义颜色的边类型生成随机颜色
@@ -287,20 +294,6 @@ def draw_able_graph_on_ax(
         for i, (u, v) in enumerate(zip(src.tolist(), dst.tolist())):
             u_node = (etype[0], u)
             v_node = (etype[2], v)
-
-            # 判断是否中心边（预测边）
-            is_center = (
-                    src_nid is not None
-                    and tgt_nid is not None
-                    and etype[0] == "user"
-                    and etype[2] == "artist"
-                    and u == src_nid
-                    and v == tgt_nid
-            )
-
-            if is_center:
-                center_edges.append((u_node, v_node, etype))
-                continue
 
             # 计算透明度
             if edge_mask is not None and etype in edge_mask:
@@ -339,29 +332,8 @@ def draw_able_graph_on_ax(
             ax=ax,
         )
 
-    # ===== 绘制中心边 =====
-    if center_edges:
-        for u_node, v_node, etype in center_edges:
-            visible_nodes.add(u_node)
-            visible_nodes.add(v_node)
-            color = edge_color_map.get(etype, 'red')
-            nx.draw_networkx_edges(
-                G,
-                pos,
-                edgelist=[(u_node, v_node)],
-                edge_color=color,
-                width=3.0,
-                alpha=1.0,
-                ax=ax,
-            )
 
     # ===== 节点颜色 =====
-    node_color_map = {
-        "user": "lightgreen",
-        "artist": "lightcoral",
-        "attr": "skyblue",
-    }
-
     for ntype in ghetero.ntypes:
         nodes = [n for n, d in G.nodes(data=True) if d["node_type"] == ntype]
         nx.draw_networkx_nodes(
@@ -386,7 +358,6 @@ def draw_able_graph_on_ax(
                 alpha=0.5,
                 ax=ax,
             )
-
 
 
     # ===== 添加图例 =====

@@ -1166,8 +1166,20 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
         run_start_time = datetime.now()
 
         for sample_idx, idx in enumerate(sample_ids):
-            src_nid = src_nids[idx].to(device)
-            tgt_nid = tgt_nids[idx].to(device)
+            # --- 新增：原地替换逻辑 ---
+            while True:
+                src_nid = src_nids[idx].to(device)
+                tgt_nid = tgt_nids[idx].to(device)
+                # 预检查子图规模
+                _, _, sg, _ = hetero_src_tgt_khop_in_subgraph(
+                    able_g.src_ntype, src_nid, able_g.tgt_ntype, tgt_nid, mp_g, num_hops
+                )
+                total_edges = sum([sg.num_edges(et) for et in sg.canonical_etypes])
+                if total_edges >= 10: # 边数少于5的样本不取用
+                    break
+                else:
+                    idx = random.randint(0, num_test - 1) # 重新随机一个
+            # --- 替换逻辑结束 ---
 
             sample_start_time = datetime.now()
             print(f"\n[Run {run + 1}, Sample {sample_idx + 1}/{len(sample_ids)}]")

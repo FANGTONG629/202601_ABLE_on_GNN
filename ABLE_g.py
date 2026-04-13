@@ -102,6 +102,7 @@ def normalize_m(edge_mask_dict):
 class ABLEg(nn.Module):
     def __init__(self,
                  model,
+                 dataset_name='lastfm',
                  lr=0.1,
                  num_epochs=25,
                  log=False,
@@ -118,7 +119,7 @@ class ABLEg(nn.Module):
         self.lambda_1 = lambda_1
         self.lambda_2 = lambda_2
         self.lambda_m = lambda_m
-
+        self.dataset_name = dataset_name
 
 
     def _init_masks(self, ghetero):
@@ -148,38 +149,45 @@ class ABLEg(nn.Module):
             "feat_nids": feat_nids
         }]
 
-        # ====== 找 user-user canonical etype ======
-        ntype_pairs_to_cannonical_etypes = get_ntype_pairs_to_cannonical_etypes(ghetero)
-        if ('user', 'user') not in ntype_pairs_to_cannonical_etypes:
+        # ====== 找扰动边 canonical etype ======
+        # 需要扰动的边是所有类型的边除去目标边，下为目标边
+        # lastfm: user-likes-artist
+        # ACM: paper-pf-field
+        # aug_citation: author-likes-paper
+        etype_counts = {
+            etype: ghetero.num_edges(etype)
+            for etype in ghetero.canonical_etypes
+            if etype[0] != self.src_ntype or etype[2] != self.tgt_ntype
+        }
+        total_aux_edges = sum(etype_counts.values())
+        if total_aux_edges == 0:
             return neighborhoods
-
-        uu_etype = ntype_pairs_to_cannonical_etypes[('user', 'user')]
-        uu_src, uu_dst = ghetero.edges(etype=uu_etype)
-        num_uu_edges = uu_src.shape[0]
-        if num_uu_edges == 0:
-            return neighborhoods
-
-        num_perturb = max(1, int(radius * num_uu_edges))
 
         # ====== 生成扰动子图 ======
         for _ in range(n_samples - 1):
             g_pert = ghetero.clone()  # 深拷贝子图
 
-            # ---- 随机删边 ----
-            del_k = rng.randint(0, num_perturb)
-            if del_k > 0:
-                del_eids = rng.sample(range(num_uu_edges), k=min(del_k, num_uu_edges))
-                del_eids = torch.tensor(del_eids, device=ghetero.device)
-                g_pert = dgl.remove_edges(g_pert, del_eids, etype=uu_etype)
+            for etype, num_edges in etype_counts.items():
+                num_perturb = max(1, int(num_edges * radius))
+                # ---- 随机加边 ----
+                add_k = rng.randint(1, num_perturb)
+                if add_k > 0:
+                    stype, _, dtype = etype
+                    num_src = g_pert.num_nodes(stype)
+                    num_dst = g_pert.num_nodes(dtype)
+                    if num_src > 0 and num_dst > 0: # 只有当源节点和目标节点在子图中都存在时，才进行加边
+                        add_src = torch.randint(0, num_src, (add_k,), device=ghetero.device, dtype=torch.long)
+                        add_dst = torch.randint(0, num_dst, (add_k,), device=ghetero.device, dtype=torch.long)
+                        g_pert = dgl.add_edges(g_pert, add_src, add_dst, etype=etype)
+                    else: # 如果子图中没有这类节点，无法加边
+                        add_k = 0
 
-            # ---- 随机加边 ----
-            add_k = num_perturb - del_k
-            if add_k > 0:
-                user_nids = g_pert.nodes('user')
-                num_users = user_nids.shape[0]
-                add_src = torch.randint(0, num_users, (add_k,), device=ghetero.device)
-                add_dst = torch.randint(0, num_users, (add_k,), device=ghetero.device)
-                g_pert = dgl.add_edges(g_pert, add_src, add_dst, etype=uu_etype)
+                # ---- 随机删边 ----
+                del_k = num_perturb - add_k
+                if del_k > 0:
+                    del_eids = rng.sample(range(num_edges), k=min(del_k, num_edges))
+                    del_eids = torch.tensor(del_eids, device=ghetero.device, dtype=torch.long)
+                    g_pert = dgl.remove_edges(g_pert, del_eids, etype=etype)
 
             neighborhoods.append({
                 "g": g_pert,
@@ -353,6 +361,8 @@ class ABLEg(nn.Module):
             num_hops
         )
 
+        print(sg)
+
         # ------生成邻居------
         neighborhoods = self.generate_neiborhood(
             src_nid=sg_src_nid,
@@ -454,13 +464,13 @@ class ABLEg(nn.Module):
                 pred_w = int(logit_w > 0)
 
             # -------- Print --------
-            print("[Adversarial Pair Check]")
-            print(f"  Original: logit={logit_orig:+.4f}, pred={pred_orig}")
-
-            flip_flag = "✅ flipped" if pred_m != pred_orig else "❌ not flipped"
-            print(f"  G_M     : logit={logit_m:+.4f}, pred={pred_m}  {flip_flag}")
-
-            print(f"  G_W     : logit={logit_w:+.4f}, pred={pred_w}")
+            # print("[Adversarial Pair Check]")
+            # print(f"  Original: logit={logit_orig:+.4f}, pred={pred_orig}")
+            #
+            # flip_flag = "✅ flipped" if pred_m != pred_orig else "❌ not flipped"
+            # print(f"  G_M     : logit={logit_m:+.4f}, pred={pred_m}  {flip_flag}")
+            #
+            # print(f"  G_W     : logit={logit_w:+.4f}, pred={pred_w}")
 
             adv_pairs.append({
                 "idx": res["idx"],
