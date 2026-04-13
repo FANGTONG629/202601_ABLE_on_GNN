@@ -14,6 +14,8 @@ from heapq import heappop, heappush
 from sklearn.metrics import roc_auc_score
 import pandas as pd
 from datetime import datetime
+from test_tsne import visualize_neighborhood_tsne
+from draw_dgl import draw_able_graph, draw_able_graph_eweight
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -1119,7 +1121,8 @@ def get_homo_nid_pairs_to_etypes(ghetero):
 
 
 def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs=4,
-                            nbh_n_samples=10, nbh_radius=0.5, num_hops=2, dataset_name="lastfm", num_epochs=25,device=None):
+                            nbh_n_samples=10, nbh_radius=0.5, num_hops=2, dataset_name="lastfm",
+                            num_epochs=25, device=None, is_save_excel=None, is_save_explanation=None):
     """
     able_g: ABLEg 实例（已 to(device)）
     model: 预测模型
@@ -1129,12 +1132,14 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
     n_runs: 重复次数（默认4）
     nbh_n_samples: 每个 explain 的 neighborhood 数量（ABLE-g 中的 n_samples 参数）
     """
-    # 创建 Excel 写入器
-    output_dir = "outputs"
+    # （只有is_save_excel时）创建 Excel 写入器
+    writer = None
+    output_dir = "outputs/EXCELS"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     excel_filename = f"{dataset_name}_pairs{nbh_n_samples}_epochs{num_epochs}_radius{nbh_radius}_{timestamp}.xlsx"
     full_path = os.path.join(output_dir, excel_filename)  # 组合成 outputs/文件名.xlsx
-    writer = pd.ExcelWriter(full_path, engine='openpyxl')
+    if is_save_excel:
+        writer = pd.ExcelWriter(full_path, engine='openpyxl')
 
     # 用于存储所有调试信息的数据结构
     all_debug_info = []
@@ -1186,7 +1191,7 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
             print(f"  Sample index: {idx}, src_nid={src_nid.item()}, tgt_nid={tgt_nid.item()}")
 
             # 调用解释器（会返回对每个 neighborhood 的 adv pairs）
-            results = able_g.explain(
+            exres = able_g.explain(
                 src_nid=src_nid,
                 tgt_nid=tgt_nid,
                 ghetero=mp_g,
@@ -1200,8 +1205,8 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
             sample_duration = (sample_end_time - sample_start_time).total_seconds()
 
             # 检查返回结果
-            if 'adv_pairs' not in results:
-                print(f"  WARNING: No 'adv_pairs' in results")
+            if 'adv_pairs' not in exres:
+                print(f"  WARNING: No 'adv_pairs' in exres")
                 debug_info = {
                     "run": run + 1,
                     "sample_idx": sample_idx + 1,
@@ -1221,7 +1226,7 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
                 all_debug_info.append(debug_info)
                 continue
 
-            adv_pairs = results['adv_pairs']
+            adv_pairs = exres['adv_pairs']
             print(f"  Number of adversarial pairs: {len(adv_pairs)}")
 
             if len(adv_pairs) == 0:
@@ -1329,6 +1334,11 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
                     "status": "SUCCESS"
                 }
                 sample_summary_data.append(sample_summary)
+                if is_save_explanation:
+                    #visualize_neighborhood_tsne(model, exres)
+                    draw_able_graph_eweight(exres, dataset_name)
+                else:
+                    print(print("\n[INFO] skipping explanation_graph export."))
             else:
                 print(f"  WARNING: No valid pairs processed for this sample")
                 sample_summary = {
@@ -1378,6 +1388,7 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
         }
         run_summary_data.append(run_summary)
 
+
     # 统计所有runs的结果
     overall_start_time = datetime.now()
 
@@ -1410,77 +1421,80 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
     print(f"G_W: Mean over {len(run_means_W)} runs = {overall['W_mean_of_runs']:.4f} ± {overall['W_std_of_runs']:.4f}")
     print("=" * 60)
 
-    # 创建DataFrame并保存到Excel
-    try:
-        # 1. Pair级别的详细信息
-        if all_debug_info:
-            df_pairs = pd.DataFrame(all_debug_info)
-            df_pairs.to_excel(writer, sheet_name='Pair_Details', index=False)
-            print(f"Saved {len(df_pairs)} pair details to Pair_Details sheet")
+    # （只有is_save_excel时）创建DataFrame并保存到Excel
+    if is_save_excel and writer is not None:
+        try:
+            # 1. Pair级别的详细信息
+            if all_debug_info:
+                df_pairs = pd.DataFrame(all_debug_info)
+                df_pairs.to_excel(writer, sheet_name='Pair_Details', index=False)
+                print(f"Saved {len(df_pairs)} pair details to Pair_Details sheet")
 
-        # 2. 样本级别的摘要信息
-        if sample_summary_data:
-            df_samples = pd.DataFrame(sample_summary_data)
-            df_samples.to_excel(writer, sheet_name='Sample_Summary', index=False)
-            print(f"Saved {len(df_samples)} sample summaries to Sample_Summary sheet")
+            # 2. 样本级别的摘要信息
+            if sample_summary_data:
+                df_samples = pd.DataFrame(sample_summary_data)
+                df_samples.to_excel(writer, sheet_name='Sample_Summary', index=False)
+                print(f"Saved {len(df_samples)} sample summaries to Sample_Summary sheet")
 
-        # 3. Run级别的摘要信息
-        if run_summary_data:
-            df_runs = pd.DataFrame(run_summary_data)
-            df_runs.to_excel(writer, sheet_name='Run_Summary', index=False)
-            print(f"Saved {len(df_runs)} run summaries to Run_Summary sheet")
+            # 3. Run级别的摘要信息
+            if run_summary_data:
+                df_runs = pd.DataFrame(run_summary_data)
+                df_runs.to_excel(writer, sheet_name='Run_Summary', index=False)
+                print(f"Saved {len(df_runs)} run summaries to Run_Summary sheet")
 
-        # 4. 整体统计信息
-        overall_stats = pd.DataFrame([{
-            'M_mean_of_runs': overall['M_mean_of_runs'],
-            'M_std_of_runs': overall['M_std_of_runs'],
-            'W_mean_of_runs': overall['W_mean_of_runs'],
-            'W_std_of_runs': overall['W_std_of_runs'],
-            'total_runs': len(run_means_M),
-            'num_explain_per_run': num_explain,
-            'n_samples': nbh_n_samples,
-            'radius': nbh_radius,
-            'num_hops': num_hops,
-            'execution_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }])
-        overall_stats.to_excel(writer, sheet_name='Overall_Stats', index=False)
-        print(f"Saved overall statistics to Overall_Stats sheet")
+            # 4. 整体统计信息
+            overall_stats = pd.DataFrame([{
+                'M_mean_of_runs': overall['M_mean_of_runs'],
+                'M_std_of_runs': overall['M_std_of_runs'],
+                'W_mean_of_runs': overall['W_mean_of_runs'],
+                'W_std_of_runs': overall['W_std_of_runs'],
+                'total_runs': len(run_means_M),
+                'num_explain_per_run': num_explain,
+                'n_samples': nbh_n_samples,
+                'radius': nbh_radius,
+                'num_hops': num_hops,
+                'execution_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }])
+            overall_stats.to_excel(writer, sheet_name='Overall_Stats', index=False)
+            print(f"Saved overall statistics to Overall_Stats sheet")
 
-        # 5. 原始run数据（用于绘制图表）
-        run_data = pd.DataFrame({
-            'run': list(range(1, len(run_means_M) + 1)),
-            'flip_rate_M': run_means_M,
-            'recover_rate_W': run_means_W
-        })
-        run_data.to_excel(writer, sheet_name='Raw_Run_Data', index=False)
-        print(f"Saved raw run data to Raw_Run_Data sheet")
+            # 5. 原始run数据（用于绘制图表）
+            run_data = pd.DataFrame({
+                'run': list(range(1, len(run_means_M) + 1)),
+                'flip_rate_M': run_means_M,
+                'recover_rate_W': run_means_W
+            })
+            run_data.to_excel(writer, sheet_name='Raw_Run_Data', index=False)
+            print(f"Saved raw run data to Raw_Run_Data sheet")
 
-        # 6. 最终统计摘要信息（新增部分）
-        final_summary_data = []
-        final_summary_data.append(["FINAL SUMMARY OF ALL RUNS"])
-        final_summary_data.append(["=" * 50])
-        final_summary_data.append(["G_M Flip Rates across runs:", str(overall['M_means'])])
-        final_summary_data.append(["G_W Recover Rates across runs:", str(overall['W_means'])])
-        final_summary_data.append([f"G_M: Mean over {len(run_means_M)} runs =",
-                                   f"{overall['M_mean_of_runs']:.4f} ± {overall['M_std_of_runs']:.4f}"])
-        final_summary_data.append([f"G_W: Mean over {len(run_means_W)} runs =",
-                                   f"{overall['W_mean_of_runs']:.4f} ± {overall['W_std_of_runs']:.4f}"])
-        final_summary_data.append(["=" * 50])
-        final_summary_data.append(["Generated at:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+            # 6. 最终统计摘要信息（新增部分）
+            final_summary_data = []
+            final_summary_data.append(["FINAL SUMMARY OF ALL RUNS"])
+            final_summary_data.append(["=" * 50])
+            final_summary_data.append(["G_M Flip Rates across runs:", str(overall['M_means'])])
+            final_summary_data.append(["G_W Recover Rates across runs:", str(overall['W_means'])])
+            final_summary_data.append([f"G_M: Mean over {len(run_means_M)} runs =",
+                                       f"{overall['M_mean_of_runs']:.4f} ± {overall['M_std_of_runs']:.4f}"])
+            final_summary_data.append([f"G_W: Mean over {len(run_means_W)} runs =",
+                                       f"{overall['W_mean_of_runs']:.4f} ± {overall['W_std_of_runs']:.4f}"])
+            final_summary_data.append(["=" * 50])
+            final_summary_data.append(["Generated at:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
 
-        df_final_summary = pd.DataFrame(final_summary_data)
-        df_final_summary.to_excel(writer, sheet_name='Final_Summary', index=False, header=False)
-        print(f"Saved final summary to Final_Summary sheet")
+            df_final_summary = pd.DataFrame(final_summary_data)
+            df_final_summary.to_excel(writer, sheet_name='Final_Summary', index=False, header=False)
+            print(f"Saved final summary to Final_Summary sheet")
 
-        # 保存Excel文件
-        writer.close()
-        print(f"\n[SUCCESS] All debug information saved to: {full_path}")
+            # 保存Excel文件
+            writer.close()
+            print(f"\n[SUCCESS] All debug information saved to: {full_path}")
 
-    except Exception as e:
-        print(f"\n[ERROR] Failed to save Excel file: {e}")
+        except Exception as e:
+            print(f"\n[ERROR] Failed to save Excel file: {e}")
+    else:
+        print("\n[INFO] skipping Excel export.")
 
     overall_end_time = datetime.now()
     total_duration = (overall_end_time - overall_start_time).total_seconds()
     print(f"Total execution time: {total_duration:.2f} seconds")
 
-    return overall
+    return overall, exres

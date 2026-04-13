@@ -17,6 +17,7 @@ import time
 import statistics
 from ABLE_g import ABLEg
 from utils import evaluate_random_runs_ex
+from test_tsne import visualize_neighborhood_tsne
 
 
 
@@ -66,6 +67,8 @@ parser.add_argument('--num_epochs', type=int, default=25, help='How many epochs 
 parser.add_argument('--num_runs', type=int, default=4, help='How many tests to run')  # 测试轮数
 parser.add_argument('--prune_max_degree', type=int, default=200,
                     help='prune the graph such that all nodes have degree smaller than max_degree. No prune if -1')  # 剪枝最大度数，200
+parser.add_argument('--save_excel', default=False, action='store_true',
+                    help='Whether to save the explanation excel')  # 是否导出excel数据
 parser.add_argument('--save_explanation', default=False, action='store_true',
                     help='Whether to save the explanation')  # 是否保存解释
 parser.add_argument('--saved_explanation_dir', type=str, default='saved_explanations',
@@ -79,9 +82,9 @@ parser.add_argument('--draw', type=int, default=0, help='draw dgl')
 
 '''
 Example:
-python ABLE_g_run.py --device_id 0 --dataset_name lastfm --radius 0.5 --num_epochs 25 --num_explain 100 --num_neighbor 10 --num_runs 4 
+python ABLE_g_run.py --device_id 0 --dataset_name aug_citation --radius 0.5 --num_epochs 25 --num_explain 100 --num_neighbor 10 --num_runs 4 --lambda_1 0.01 --lambda_2 0.1
 python ABLE_g_run.py --device_id 0 --dataset_name lastfm --radius 0.3 --num_epochs 25 --num_explain 100 --num_neighbor 10 --num_runs 4
-python ABLE_g_run.py --device_id 0 --dataset_name ACM --radius 0.1 --num_epochs 25 --num_explain 100 --num_neighbor 10 --num_runs 4 --num_hops 2 --emb_dim 64 --hidden_dim 64 --out_dim 64
+python ABLE_g_run.py --device_id 0 --dataset_name ACM --radius 0.9 --num_epochs 25 --num_explain 100 --num_neighbor 10 --num_runs 4 --num_hops 2 --emb_dim 64 --hidden_dim 64 --out_dim 64 --lambda_1 0.01 --lambda_2 0.001
 
 '''
 
@@ -144,6 +147,7 @@ able_g = ABLEg(model,
                lambda_1=args.lambda_1,
                lambda_2=args.lambda_2,
                lambda_m=args.lambda_m,
+               dataset_name=args.dataset_name,
                ).to(device) # init able explainer
 
 # ========== ABLE-g explanation ==========
@@ -158,7 +162,7 @@ sample_ids = random.sample(test_ids, num_explain)
 print(f"\n[ABLE-g RUN] Explaining {num_explain} test samples\n")
 
 
-overall_stats = evaluate_random_runs_ex(
+overall_stats, exres = evaluate_random_runs_ex(
         able_g=able_g,
         model=model,
         mp_g=mp_g,
@@ -170,10 +174,14 @@ overall_stats = evaluate_random_runs_ex(
         num_hops=args.num_hops,
         dataset_name=args.dataset_name,
         num_epochs=args.num_epochs,
-        device=device
+        device=device,
+        is_save_excel=args.save_excel,
+        is_save_explanation=args.save_explanation
     )
 
 print("Overall stats:", overall_stats)
+
+#visualize_neighborhood_tsne(model, exres)
 
 
 #测试：指定样本

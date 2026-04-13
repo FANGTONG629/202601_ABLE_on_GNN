@@ -4,7 +4,7 @@ import dgl
 import torch
 import os
 import numpy as np
-
+from datetime import datetime
 from collections import defaultdict
 
 
@@ -84,154 +84,233 @@ def draw_path(edges, img_name, save_dir, dataset, src_nid,tgt_nid):
     plt.title("Heterogeneous Graph Visualization")
 
 
+
 def draw_able_graph(
-    G_dict,
+    g,
     img_name,
     save_dir,
     dataset_name,
-    src_nid,
-    tgt_nid,
-    use_edge_mask=True,
-    alpha_min=0.05,
-    alpha_max=1.0,
-):
-    """
-    Visualize ABLE-g G_M / G_W for lastfm-like heterogeneous graphs.
-
-    Parameters
-    ----------
-    G_dict : dict
-        {
-            "graph": dgl.DGLHeteroGraph,
-            "edge_mask": dict[canonical_etype -> Tensor[num_edges]]  (optional)
-        }
-    use_edge_mask : bool
-        Whether to visualize edge mask by transparency
-    """
-
-    g = G_dict["graph"]
-    edge_mask_dict = G_dict.get("edge_mask", None)
-
-    # -------- lastfm schema --------
-    if "lastfm" in dataset_name:
-        src_ntype = "user"
-        tgt_ntype = "artist"
-        pred_etype = ("user", "likes", "artist")
-    else:
-        raise ValueError("draw_able_graph currently supports lastfm only")
-
-    # -------- build networkx graph --------
+    feat_nids,
+    eweight_dict=None
+): # 可以用来画没有掩码的邻居子图
     G = nx.Graph()
+    node_types = g.ntypes
+    for ntype in node_types:
+        G.add_nodes_from(list(range(g.num_nodes(ntype))), node_type=ntype)
+    # 添加边：从异构图的每种关系类型中提取边
+    edge_types = g.canonical_etypes
+    for etype in edge_types:
+        src, dst = g.edges(form='uv', etype=etype)
+        for u, v in zip(src.tolist(), dst.tolist()):
+            G.add_edge(u, v, edge_type=f'{etype[1]}_{etype[2]}')
+    # 绘制图形
+    pos = nx.spring_layout(G)  # 使用spring布局
+    plt.figure(figsize=(8, 8))
 
-    # node id: (ntype, nid) to avoid collision
-    for ntype in g.ntypes:
-        for nid in range(g.num_nodes(ntype)):
-            G.add_node(
-                (ntype, nid),
-                ntype=ntype
-            )
+    # 绘制节点，按类型区分颜色
+    if dataset_name == 'lastfm':
+        color_map = {
+            'artist': '#9EBBD7',  # 雾霾天蓝 (Dusty Baby Blue)
+            'user': '#A7CFAB'    # 灰调薄荷绿 (Grayish Mint Green)
+        }
+    elif dataset_name == 'aug_citation':
+        color_map = {
+            'paper': '#FBB4AE',   # 珊瑚粉 (核心)
+            'fos': '#CCEBC5',     # 薄荷绿 (领域)
+            'author': '#B3CDE3',  # 冰晶蓝 (人物)
+            'ref': '#E5E5E5'      # 浅珍珠灰 (辅助/参考文献)
+        }
+    elif dataset_name == 'ACM':
+        color_map = {
+            'author': '#B0C4DE',  # 雾霾淡蓝 (Light Dusty Blue)
+            'field': '#A9DFBF',   # 雾霾淡绿 (Light Dusty Green)
+            'paper': '#E6B0C1'    # 雾霾粉红 (Light Dusty Pink)
+        }
+    for ntype in node_types:
+        node_indices = [n for n, attr in G.nodes(data=True) if attr['node_type'] == ntype]
+        nx.draw_networkx_nodes(G, pos, nodelist=node_indices, node_color=color_map[ntype], label=ntype, node_size=70, alpha=0.7)
+    # 绘制边
+    nx.draw_networkx_edges(G, pos, width=0.5, edge_color='gray', alpha=0.5)
 
-    # edges
-    edge_attr = {}  # ((u),(v)) -> alpha
+    # 添加标签
+    nx.draw_networkx_labels(G, pos, font_size=5, alpha=0.4)
+
+    # 显示图例
+    plt.legend(scatterpoints=1)
+    plt.title("Heterogeneous Graph Visualization")
+    plt.savefig(save_dir + "/" + img_name + ".png")  # 保存为图片文件
+    plt.show()
+
+
+def get_mask_delta(g, mask1=None, mask2=None):
+    """
+    计算两个掩码之间的差值 (mask3 = mask2 - mask1)。
+
+    参数:
+    ----
+    g : DGLGraph 当前的异构图对象，用于在掩码为 None 时获取各关系的边数和设备信息。
+    mask1 : dict[etype, Tensor] or None 第一个掩码字典。若为 None，则每条边的掩码默认为 1。
+    mask2 : dict[etype, Tensor] or None 第二个掩码字典。若为 None，则每条边的掩码默认为 1。
+
+    返回:
+    ----
+    mask3 : dict[etype, Tensor]
+        作差后的掩码字典，保留所有结果（包括负数和 0）。
+    """
+    mask3 = {}
+    device = g.device
+
+    # 遍历图中所有的规范关系类型 (canonical_etypes)
     for etype in g.canonical_etypes:
-        src, dst = g.edges(etype=etype)
-        mask = None
+        num_edges = g.num_edges(etype)
+        # --- 处理 mask1 ---
+        if mask1 is None or etype not in mask1:
+            m1 = torch.ones(num_edges, device=device) # 如果传入为 None，每条边掩码默认为 1
+        else: m1 = mask1[etype]
+        # --- 处理 mask2 ---
+        if mask2 is None or etype not in mask2:
+            m2 = torch.ones(num_edges, device=device)
+        else: m2 = mask2[etype]
 
-        if use_edge_mask and edge_mask_dict is not None:
-            mask = edge_mask_dict[etype].detach().cpu()
+        # --- 执行作差计算：mask3 = mask2 - mask1 ---
+        mask3[etype] = m2 - m1 # 直接相减，保留负数、0 以及正数
+
+    return mask3
+
+
+def draw_able_graph_eweight(exres, dataset_name, img_name=None, save_dir="./outputs/GRAPH_EW"):
+    """
+        按照掩码 eweight_dict 调整边的透明度和粗细，展示解释子图。
+        参考 visualize_neighborhood_tsne 结构提取数据。
+        """
+    # 1. 路径与命名准备
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if img_name is None:
+        img_name = f"delta_G_{dataset_name}_{timestamp}"
+
+    # 2. 提取数据结构 (参考 exres 结构)
+    # 默认绘制第一对对抗样本中的 G_M (反事实解释图)
+    adv_pairs = exres.get("adv_pairs", [])
+    if not adv_pairs:
+        print("No adversarial pairs found in exres.")
+        return
+
+    sample_pair = adv_pairs[0]
+    g = sample_pair['G_M']['graph']
+    # 计算差值：mask_delta = G_M_mask - None_mask (即 G_M_mask - 1), 结果为负表示该边在 G_M 中被削弱了
+    #mask_delta = get_mask_delta(g, mask1=None, mask2=sample_sample_pair['G_M']['edge_mask'])
+    mask_delta = get_mask_delta(g, mask1=sample_pair['G_M']['edge_mask'], mask2=sample_pair['G_W']['edge_mask'])
+
+    # 3. 构建 NetworkX 图
+    G = nx.Graph()
+    node_types = g.ntypes
+    for ntype in node_types:
+        # 添加节点并标记类型
+        for i in range(g.num_nodes(ntype)):
+            G.add_node(f"{ntype}_{i}", node_type=ntype)
+
+    # 4. 构建边并映射权重 (负数桶，正数桶，以及 0)
+    bins = [-1.0, -0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    edge_buckets = {b: [] for b in bins}
+
+    # 一次性将所有 mask 搬到 CPU，避免循环内 item() 造成的 IO 延迟
+    cpu_masks = {etype: m.detach().cpu().numpy() for etype, m in mask_delta.items()}
+
+    for etype in g.canonical_etypes:
+        u_ntype, rel, v_ntype = etype
+        src, dst = g.edges(form='uv', etype=etype)
+        mask = cpu_masks.get(etype)
 
         for i, (u, v) in enumerate(zip(src.tolist(), dst.tolist())):
-            u_node = (etype[0], u)
-            v_node = (etype[2], v)
+            m_val = float(mask[i])
+            # --- 剪枝策略：小于 0.35 直接丢弃 ---
+            if abs(m_val) < 0.35: continue
+            u_name, v_name = f"{u_ntype}_{u}", f"{v_ntype}_{v}"
+            G.add_edge(u_name, v_name) # 只有不被剪枝的边才加入 G
+            # --- 分桶逻辑 ---
+            for b in bins:
+                if m_val <= b:
+                    edge_buckets[b].append((u_name, v_name))
+                    break
 
-            G.add_edge(
-                u_node,
-                v_node,
-                etype=etype
-            )
+    # 5. 布局与配色 (使用你要求的甜美色系)
+    pos = nx.spring_layout(G, k=0.5, iterations=30, seed=42)
+    plt.figure(figsize=(10, 10))
 
-            if mask is not None:
-                alpha = mask[i].item()
-                alpha = max(alpha_min, min(alpha, alpha_max))
-            else:
-                alpha = 1.0
+    if dataset_name == 'lastfm':
+        color_map = {
+            'artist': '#9EBBD7',  # 雾霾天蓝 (Dusty Baby Blue)
+            'user': '#A7CFAB'  # 灰调薄荷绿 (Grayish Mint Green)
+        }
+    elif dataset_name == 'aug_citation':
+        color_map = {
+            'paper': '#FBB4AE',  # 珊瑚粉 (核心)
+            'fos': '#CCEBC5',  # 薄荷绿 (领域)
+            'author': '#B3CDE3',  # 冰晶蓝 (人物)
+            'ref': '#E5E5E5'  # 浅珍珠灰 (辅助/参考文献)
+        }
+    elif dataset_name == 'ACM':
+        color_map = {
+            'author': '#B0C4DE',  # 雾霾淡蓝 (Light Dusty Blue)
+            'field': '#A9DFBF',  # 雾霾淡绿 (Light Dusty Green)
+            'paper': '#E6B0C1'  # 雾霾粉红 (Light Dusty Pink)
+        }
+    else:
+        color_map = {ntype: plt.cm.Pastel1(i) for i, ntype in enumerate(node_types)}
 
-            edge_attr[(u_node, v_node)] = alpha
-
-    # -------- layout --------
-    pos = nx.spring_layout(G, seed=42)
-
-    plt.figure(figsize=(9, 9))
-
-    # -------- draw nodes --------
-    node_colors = {
-        "user": "lightgreen",
-        "artist": "lightcoral",
-        "attr": "skyblue",
-    }
-
-    for ntype in g.ntypes:
-        nodelist = [n for n in G.nodes if n[0] == ntype]
-        nx.draw_networkx_nodes(
-            G,
-            pos,
-            nodelist=nodelist,
-            node_color=node_colors.get(ntype, "gray"),
-            node_size=500,
-            alpha=0.9,
-            label=ntype
-        )
-
-    # highlight src / tgt
-    nx.draw_networkx_nodes(
-        G,
-        pos,
-        nodelist=[(src_ntype, int(src_nid))],
-        node_color="gold",
-        node_size=700,
-        label="src"
-    )
-    nx.draw_networkx_nodes(
-        G,
-        pos,
-        nodelist=[(tgt_ntype, int(tgt_nid))],
-        node_color="orange",
-        node_size=700,
-        label="tgt"
-    )
-
-    # -------- draw edges --------
-    for (u, v), alpha in edge_attr.items():
-        etype = G.edges[u, v]["etype"]
-        if etype == pred_etype:
-            color = "red"
-            width = 2.5
+    # 6. 绘制节点
+    for node, attr in G.nodes(data=True):
+        ntype = attr['node_type']
+        if G.degree(node) == 0:
+            G.nodes[node]['final_color'] = 'white' # 逻辑：度为 0 的节点只画黑框（'none'），有边的点画颜色
+            G.nodes[node]['edge_color'] = 'black'
         else:
-            color = "gray"
-            width = 1.0
+            G.nodes[node]['final_color'] = color_map.get(ntype, '#D3D3D3')
+            G.nodes[node]['edge_color'] = 'white'
+    for ntype in node_types:
+        nodelist = [n for n, attr in G.nodes(data=True) if attr['node_type'] == ntype]
+        if not nodelist: continue
+        ncolors = [G.nodes[n]['final_color'] for n in nodelist]
+        ecolors = [G.nodes[n]['edge_color'] for n in nodelist]
+        nx.draw_networkx_nodes(G, pos, nodelist=nodelist,
+                               node_color=ncolors,
+                               label=None, node_size=150,
+                               edgecolors=ecolors, linewidths=0.5, alpha=0.8)
 
-        nx.draw_networkx_edges(
-            G,
-            pos,
-            edgelist=[(u, v)],
-            alpha=alpha,
-            width=width,
-            edge_color=color
-        )
+    # 7. 绘制边 (分批绘制以支持独立的 alpha)
+    for b in bins:
+        if edge_buckets[b]: # 线宽根据桶的上限动态计算，例如 0.2 桶宽 0.18，1.0 桶宽 0.5
+            c = 'red' if b < 0 else 'gray'
+            current_width = 0.2 + 0.4 * abs(b)
+            nx.draw_networkx_edges(G, pos,
+                                   edgelist=edge_buckets[b],
+                                   width=current_width,
+                                   alpha=max(0.2, abs(b)),
+                                   edge_color=c)
 
-    # -------- labels --------
-    labels = {n: f"{n[0]}:{n[1]}" for n in G.nodes}
-    nx.draw_networkx_labels(G, pos, labels=labels, font_size=8)
+    # 8. 绘制标签与图例
+    nx.draw_networkx_labels(G, pos, font_size=6, font_color="black", alpha=0.7)
+    legend_elements = [ # 手动构建和图中节点样式一模一样的图例
+        plt.Line2D([0], [0], marker='o', color='w',
+                   label=ntype,
+                   markerfacecolor=color_map.get(ntype, '#D3D3D3'),
+                   markersize=12,
+                   markeredgecolor='white',
+                   markeredgewidth=0.5)
+        for ntype in node_types if ntype in color_map
+    ]
+    plt.legend(handles=legend_elements, loc='upper right', frameon=True) # 使用自定义条目替代自动生成的图例
+    plt.title(f"Mask Delta (G_M - Neighbor): {dataset_name}\nRed: Weakened, Black: Strengthened")
+    plt.axis('off')
 
-    plt.legend()
-    plt.title("ABLE-g Edge-Masked Graph Visualization")
-    plt.axis("off")
-    plt.tight_layout()
+    # 9. 保存与显示
+    save_path = os.path.join(save_dir, f"{img_name}.png")
+    plt.savefig(save_path, bbox_inches='tight', dpi=300)
+    print(f"Graph visualization saved to: {save_path}")
     plt.show()
-    if save_dir is not None:
-        os.makedirs(save_dir, exist_ok=True)
-        plt.savefig(f"{save_dir}/{img_name}.png")
-    plt.close()
 
 
 def draw_able_graph_on_ax(
@@ -377,74 +456,3 @@ def draw_able_graph_on_ax(
 
     ax.axis("off")
 
-# def draw_able_graph_on_ax(
-#     ax,
-#     ghetero,
-#     edge_mask=None,
-#     dataset_name="lastfm",
-#     src_nid=None,
-#     tgt_nid=None,
-#     title=None,
-# ):
-#     import networkx as nx
-#     import numpy as np
-#
-#     G = nx.Graph()
-#
-#     # ===== 节点 =====
-#     for ntype in ghetero.ntypes:
-#         for nid in range(ghetero.num_nodes(ntype)):
-#             G.add_node((ntype, nid), node_type=ntype)
-#
-#     # ===== 边（先收集，不画）=====
-#     edges_by_alpha = {}  # alpha -> [(u,v), ...]
-#
-#     for etype in ghetero.canonical_etypes:
-#         src, dst = ghetero.edges(form="uv", etype=etype)
-#
-#         for i, (u, v) in enumerate(zip(src.tolist(), dst.tolist())):
-#             alpha = 1.0
-#             if edge_mask is not None:
-#                 alpha = float(edge_mask[etype][i].clamp(0, 1).item())
-#
-#             alpha = round(alpha, 2)  # 分桶，避免过多组
-#             edges_by_alpha.setdefault(alpha, []).append(
-#                 ((etype[0], u), (etype[2], v))
-#             )
-#
-#     # ===== layout（只算一次）=====
-#     pos = nx.spring_layout(G, seed=42)
-#
-#     # ===== 节点颜色 =====
-#     color_map = {
-#         "user": "lightgreen",
-#         "artist": "lightcoral",
-#         "attr": "skyblue",
-#     }
-#
-#     for ntype in ghetero.ntypes:
-#         nodes = [n for n, d in G.nodes(data=True) if d["node_type"] == ntype]
-#         nx.draw_networkx_nodes(
-#             G,
-#             pos,
-#             nodelist=nodes,
-#             node_color=color_map.get(ntype, "gray"),
-#             node_size=20,
-#             ax=ax,
-#         )
-#
-#     # ===== 一次画一组边（关键）=====
-#     for alpha, edgelist in edges_by_alpha.items():
-#         nx.draw_networkx_edges(
-#             G,
-#             pos,
-#             edgelist=edgelist,
-#             alpha=alpha,
-#             width=0.5,
-#             ax=ax,
-#         )
-#
-#     if title:
-#         ax.set_title(title, fontsize=10)
-#
-#     ax.axis("off")

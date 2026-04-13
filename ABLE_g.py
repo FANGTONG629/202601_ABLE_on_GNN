@@ -9,11 +9,10 @@ from tqdm.auto import tqdm
 from collections import defaultdict
 from utils import get_ntype_hetero_nids_to_homo_nids, get_homo_nids_to_ntype_hetero_nids, get_ntype_pairs_to_cannonical_etypes
 from utils import hetero_src_tgt_khop_in_subgraph, get_neg_path_score_func, k_shortest_paths_with_max_length
-from draw_dgl import draw_able_graph
 import numpy as np
 from scipy.linalg import sqrtm
 from sklearn.metrics import log_loss
-from draw_dgl import draw
+from draw_dgl import draw, draw_able_graph
 import time
 from metrics import eval_fid, eval_SI_avg, eval_spa
 
@@ -269,7 +268,7 @@ class ABLEg(nn.Module):
         G_M = {
             "graph": ghetero,
             "edge_mask": {
-                etype: 1.0 - torch.sigmoid((m_edge_mask_dict[etype].sigmoid() - 0.5) * 12)
+                etype: (1.0 - torch.sigmoid((m_edge_mask_dict[etype].sigmoid() - 0.5) * 12)).clone().detach()
                 for etype in ghetero.canonical_etypes
             },
             "loss": g_m_loss
@@ -338,7 +337,7 @@ class ABLEg(nn.Module):
         G_W = {
             "graph": ghetero,
             "edge_mask": {
-                etype: final_eweight_W[etype].detach()
+                etype: final_eweight_W[etype].clone().detach()
                 for etype in ghetero.canonical_etypes
             },
             "loss":g_w_loss
@@ -404,6 +403,7 @@ class ABLEg(nn.Module):
                     "tgt_nid": tgt_sub,
                     "feat_nids": feat_sub
                 })
+
 
         # ------生成对抗样本对------
         # 有梯度
