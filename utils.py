@@ -3,7 +3,7 @@ import torch
 import random
 import textwrap
 import yaml
-import time
+import os
 import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -12,6 +12,8 @@ from dgl.subgraph import khop_in_subgraph
 from itertools import count
 from heapq import heappop, heappush
 from sklearn.metrics import roc_auc_score
+import pandas as pd
+from datetime import datetime
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -1113,3 +1115,360 @@ def get_homo_nid_pairs_to_etypes(ghetero):
     homo_nid_pairs_to_etypes = dict(zip(zip(u.tolist(), v.tolist()), etype_list))
     return homo_nid_pairs_to_etypes
 
+
+
+
+def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs=4,
+                            nbh_n_samples=10, nbh_radius=0.5, num_hops=2, dataset_name="lastfm", num_epochs=25,device=None):
+    """
+    able_g: ABLEg 实例（已 to(device)）
+    model: 预测模型
+    mp_g: 原始大图
+    test_pos_g: 测试正样本图（edges() 返回 src,tgt）
+    num_explain: 每次抽样解释的样本数
+    n_runs: 重复次数（默认4）
+    nbh_n_samples: 每个 explain 的 neighborhood 数量（ABLE-g 中的 n_samples 参数）
+    """
+    # 创建 Excel 写入器
+    output_dir = "outputs"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    excel_filename = f"{dataset_name}_pairs{nbh_n_samples}_epochs{num_epochs}_radius{nbh_radius}_{timestamp}.xlsx"
+    full_path = os.path.join(output_dir, excel_filename)  # 组合成 outputs/文件名.xlsx
+    writer = pd.ExcelWriter(full_path, engine='openpyxl')
+
+    # 用于存储所有调试信息的数据结构
+    all_debug_info = []
+    run_summary_data = []
+    sample_summary_data = []
+
+    src_nids, tgt_nids = test_pos_g.edges()
+    num_test = src_nids.shape[0]
+    device = device or mp_g.device
+    run_means_M = []
+    run_means_W = []
+
+    print(f"[evaluate_random_runs] Starting evaluation with {n_runs} runs")
+    print(f"[evaluate_random_runs] Total test samples: {num_test}")
+    print(f"[evaluate_random_runs] Samples per run: {num_explain}")
+    print(f"[evaluate_random_runs] Debug info will be saved to: {full_path}")
+
+    for run in range(n_runs):
+        # 随机抽样 num_explain 个样本
+        ids = list(range(num_test))
+        random.seed(run + 12345)
+        sample_ids = random.sample(ids, min(num_explain, num_test))
+
+        print(f"\n[Run {run + 1}/{n_runs}] Sampling {len(sample_ids)} test samples")
+
+        sample_accs_M = []
+        sample_accs_W = []
+
+        run_start_time = datetime.now()
+
+        for sample_idx, idx in enumerate(sample_ids):
+            src_nid = src_nids[idx].to(device)
+            tgt_nid = tgt_nids[idx].to(device)
+
+            sample_start_time = datetime.now()
+            print(f"\n[Run {run + 1}, Sample {sample_idx + 1}/{len(sample_ids)}]")
+            print(f"  Sample index: {idx}, src_nid={src_nid.item()}, tgt_nid={tgt_nid.item()}")
+
+            # 调用解释器（会返回对每个 neighborhood 的 adv pairs）
+            results = able_g.explain(
+                src_nid=src_nid,
+                tgt_nid=tgt_nid,
+                ghetero=mp_g,
+                radius=nbh_radius,
+                n_samples=nbh_n_samples,
+                random_seed=42,
+                num_hops=num_hops
+            )
+
+            sample_end_time = datetime.now()
+            sample_duration = (sample_end_time - sample_start_time).total_seconds()
+
+            # 检查返回结果
+            if 'adv_pairs' not in results:
+                print(f"  WARNING: No 'adv_pairs' in results")
+                debug_info = {
+                    "run": run + 1,
+                    "sample_idx": sample_idx + 1,
+                    "sample_id": idx,
+                    "src_nid": src_nid.item(),
+                    "tgt_nid": tgt_nid.item(),
+                    "status": "ERROR: No adv_pairs",
+                    "num_adv_pairs": 0,
+                    "flipped_count_M": 0,
+                    "correct_count_W": 0,
+                    "total_pairs": 0,
+                    "flip_rate_M": 0.0,
+                    "recover_rate_W": 0.0,
+                    "duration_seconds": sample_duration,
+                    "timestamp": sample_end_time.strftime("%H:%M:%S")
+                }
+                all_debug_info.append(debug_info)
+                continue
+
+            adv_pairs = results['adv_pairs']
+            print(f"  Number of adversarial pairs: {len(adv_pairs)}")
+
+            if len(adv_pairs) == 0:
+                print(f"  WARNING: Empty adv_pairs list")
+                debug_info = {
+                    "run": run + 1,
+                    "sample_idx": sample_idx + 1,
+                    "sample_id": idx,
+                    "src_nid": src_nid.item(),
+                    "tgt_nid": tgt_nid.item(),
+                    "status": "WARNING: Empty adv_pairs",
+                    "num_adv_pairs": 0,
+                    "flipped_count_M": 0,
+                    "correct_count_W": 0,
+                    "total_pairs": 0,
+                    "flip_rate_M": 0.0,
+                    "recover_rate_W": 0.0,
+                    "duration_seconds": sample_duration,
+                    "timestamp": sample_end_time.strftime("%H:%M:%S")
+                }
+                all_debug_info.append(debug_info)
+                continue
+
+            # 初始化计数器
+            flipped_count_M = 0
+            correct_count_W = 0
+            total_pairs = 0
+
+            # 收集每个pair的详细信息
+            pair_details = []
+
+            # 遍历所有对抗样本对
+            for pair_idx, pair in enumerate(adv_pairs):
+                pair_info = {
+                    "run": run + 1,
+                    "sample_idx": sample_idx + 1,
+                    "sample_id": idx,
+                    "pair_idx": pair_idx,
+                    "src_nid": src_nid.item(),
+                    "tgt_nid": tgt_nid.item(),
+                    "y": pair.get("y", "N/A"),
+                    "pred_orig": pair.get("pred_orig", "N/A"),
+                    "pred_m": pair.get("pred_m", "N/A"),
+                    "pred_w": pair.get("pred_w", "N/A")
+                }
+
+                print(f"    Pair {pair_idx}: ", end="")
+
+                # 直接从pair中获取预计算的结果
+                if "pred_orig" in pair and "pred_m" in pair and "pred_w" in pair:
+                    pred_orig = pair["pred_orig"]
+                    pred_m = pair["pred_m"]
+                    pred_w = pair["pred_w"]
+
+                    print(f"orig={pred_orig}, M={pred_m}, W={pred_w}")
+
+                    total_pairs += 1
+                    if pred_m != pred_orig:
+                        flipped_count_M += 1
+                        pair_info["flipped"] = "YES"
+                    else:
+                        pair_info["flipped"] = "NO"
+
+                    if pred_w == pred_orig:
+                        correct_count_W += 1
+                        pair_info["recovered"] = "YES"
+                    else:
+                        pair_info["recovered"] = "NO"
+                else:
+                    print(f"WARNING: Missing prediction fields")
+                    pair_info["flipped"] = "ERROR"
+                    pair_info["recovered"] = "ERROR"
+
+                pair_details.append(pair_info)
+
+            # 将pair详情添加到调试信息
+            all_debug_info.extend(pair_details)
+
+            if total_pairs > 0:
+                flip_rate_M = flipped_count_M / total_pairs
+                recover_rate_W = correct_count_W / total_pairs
+
+                sample_accs_M.append(flip_rate_M)
+                sample_accs_W.append(recover_rate_W)
+
+                print(f"  Summary for this sample:")
+                print(f"    Total pairs: {total_pairs}")
+                print(f"    Flipped by G_M: {flipped_count_M} ({flip_rate_M:.2%})")
+                print(f"    Recovered by G_W: {correct_count_W} ({recover_rate_W:.2%})")
+
+                # 记录样本摘要信息
+                sample_summary = {
+                    "run": run + 1,
+                    "sample_idx": sample_idx + 1,
+                    "sample_id": idx,
+                    "src_nid": src_nid.item(),
+                    "tgt_nid": tgt_nid.item(),
+                    "num_adv_pairs": len(adv_pairs),
+                    "total_pairs": total_pairs,
+                    "flipped_count_M": flipped_count_M,
+                    "correct_count_W": correct_count_W,
+                    "flip_rate_M": flip_rate_M,
+                    "recover_rate_W": recover_rate_W,
+                    "duration_seconds": sample_duration,
+                    "status": "SUCCESS"
+                }
+                sample_summary_data.append(sample_summary)
+            else:
+                print(f"  WARNING: No valid pairs processed for this sample")
+                sample_summary = {
+                    "run": run + 1,
+                    "sample_idx": sample_idx + 1,
+                    "sample_id": idx,
+                    "src_nid": src_nid.item(),
+                    "tgt_nid": tgt_nid.item(),
+                    "num_adv_pairs": len(adv_pairs),
+                    "total_pairs": total_pairs,
+                    "flipped_count_M": 0,
+                    "correct_count_W": 0,
+                    "flip_rate_M": 0.0,
+                    "recover_rate_W": 0.0,
+                    "duration_seconds": sample_duration,
+                    "status": "WARNING: No valid pairs"
+                }
+                sample_summary_data.append(sample_summary)
+
+        # 计算本次 run 的平均精度
+        run_end_time = datetime.now()
+        run_duration = (run_end_time - run_start_time).total_seconds()
+
+        if len(sample_accs_M) == 0:
+            mean_M = 0.0
+            mean_W = 0.0
+            print(f"[Run {run + 1}/{n_runs}] No valid samples processed")
+        else:
+            mean_M = float(np.mean(sample_accs_M))
+            mean_W = float(np.mean(sample_accs_W))
+            print(f"\n[Run {run + 1}/{n_runs}] Summary:")
+            print(f"  Processed {len(sample_accs_M)} samples")
+            print(f"  Mean flip rate (G_M): {mean_M:.4f}")
+            print(f"  Mean recover rate (G_W): {mean_W:.4f}")
+
+        run_means_M.append(mean_M)
+        run_means_W.append(mean_W)
+
+        # 记录run摘要信息
+        run_summary = {
+            "run": run + 1,
+            "num_samples": len(sample_accs_M),
+            "mean_flip_rate_M": mean_M,
+            "mean_recover_rate_W": mean_W,
+            "duration_seconds": run_duration,
+            "timestamp": run_end_time.strftime("%H:%M:%S")
+        }
+        run_summary_data.append(run_summary)
+
+    # 统计所有runs的结果
+    overall_start_time = datetime.now()
+
+    if len(run_means_M) == 0:
+        print("\n[WARNING] No valid runs completed!")
+        overall = {
+            'M_means': [],
+            'W_means': [],
+            'M_mean_of_runs': 0.0,
+            'M_std_of_runs': 0.0,
+            'W_mean_of_runs': 0.0,
+            'W_std_of_runs': 0.0
+        }
+    else:
+        overall = {
+            'M_means': run_means_M,
+            'W_means': run_means_W,
+            'M_mean_of_runs': float(np.mean(run_means_M)),
+            'M_std_of_runs': float(np.std(run_means_M, ddof=1)) if len(run_means_M) > 1 else 0.0,
+            'W_mean_of_runs': float(np.mean(run_means_W)),
+            'W_std_of_runs': float(np.std(run_means_W, ddof=1)) if len(run_means_W) > 1 else 0.0
+        }
+
+    print("\n" + "=" * 60)
+    print("FINAL SUMMARY OF ALL RUNS")
+    print("=" * 60)
+    print(f"G_M Flip Rates across runs: {overall['M_means']}")
+    print(f"G_W Recover Rates across runs: {overall['W_means']}")
+    print(f"G_M: Mean over {len(run_means_M)} runs = {overall['M_mean_of_runs']:.4f} ± {overall['M_std_of_runs']:.4f}")
+    print(f"G_W: Mean over {len(run_means_W)} runs = {overall['W_mean_of_runs']:.4f} ± {overall['W_std_of_runs']:.4f}")
+    print("=" * 60)
+
+    # 创建DataFrame并保存到Excel
+    try:
+        # 1. Pair级别的详细信息
+        if all_debug_info:
+            df_pairs = pd.DataFrame(all_debug_info)
+            df_pairs.to_excel(writer, sheet_name='Pair_Details', index=False)
+            print(f"Saved {len(df_pairs)} pair details to Pair_Details sheet")
+
+        # 2. 样本级别的摘要信息
+        if sample_summary_data:
+            df_samples = pd.DataFrame(sample_summary_data)
+            df_samples.to_excel(writer, sheet_name='Sample_Summary', index=False)
+            print(f"Saved {len(df_samples)} sample summaries to Sample_Summary sheet")
+
+        # 3. Run级别的摘要信息
+        if run_summary_data:
+            df_runs = pd.DataFrame(run_summary_data)
+            df_runs.to_excel(writer, sheet_name='Run_Summary', index=False)
+            print(f"Saved {len(df_runs)} run summaries to Run_Summary sheet")
+
+        # 4. 整体统计信息
+        overall_stats = pd.DataFrame([{
+            'M_mean_of_runs': overall['M_mean_of_runs'],
+            'M_std_of_runs': overall['M_std_of_runs'],
+            'W_mean_of_runs': overall['W_mean_of_runs'],
+            'W_std_of_runs': overall['W_std_of_runs'],
+            'total_runs': len(run_means_M),
+            'num_explain_per_run': num_explain,
+            'n_samples': nbh_n_samples,
+            'radius': nbh_radius,
+            'num_hops': num_hops,
+            'execution_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }])
+        overall_stats.to_excel(writer, sheet_name='Overall_Stats', index=False)
+        print(f"Saved overall statistics to Overall_Stats sheet")
+
+        # 5. 原始run数据（用于绘制图表）
+        run_data = pd.DataFrame({
+            'run': list(range(1, len(run_means_M) + 1)),
+            'flip_rate_M': run_means_M,
+            'recover_rate_W': run_means_W
+        })
+        run_data.to_excel(writer, sheet_name='Raw_Run_Data', index=False)
+        print(f"Saved raw run data to Raw_Run_Data sheet")
+
+        # 6. 最终统计摘要信息（新增部分）
+        final_summary_data = []
+        final_summary_data.append(["FINAL SUMMARY OF ALL RUNS"])
+        final_summary_data.append(["=" * 50])
+        final_summary_data.append(["G_M Flip Rates across runs:", str(overall['M_means'])])
+        final_summary_data.append(["G_W Recover Rates across runs:", str(overall['W_means'])])
+        final_summary_data.append([f"G_M: Mean over {len(run_means_M)} runs =",
+                                   f"{overall['M_mean_of_runs']:.4f} ± {overall['M_std_of_runs']:.4f}"])
+        final_summary_data.append([f"G_W: Mean over {len(run_means_W)} runs =",
+                                   f"{overall['W_mean_of_runs']:.4f} ± {overall['W_std_of_runs']:.4f}"])
+        final_summary_data.append(["=" * 50])
+        final_summary_data.append(["Generated at:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+
+        df_final_summary = pd.DataFrame(final_summary_data)
+        df_final_summary.to_excel(writer, sheet_name='Final_Summary', index=False, header=False)
+        print(f"Saved final summary to Final_Summary sheet")
+
+        # 保存Excel文件
+        writer.close()
+        print(f"\n[SUCCESS] All debug information saved to: {full_path}")
+
+    except Exception as e:
+        print(f"\n[ERROR] Failed to save Excel file: {e}")
+
+    overall_end_time = datetime.now()
+    total_duration = (overall_end_time - overall_start_time).total_seconds()
+    print(f"Total execution time: {total_duration:.2f} seconds")
+
+    return overall

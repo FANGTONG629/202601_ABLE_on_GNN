@@ -10,9 +10,15 @@ from metrics import eval_SI_avg
 from utils import set_seed, print_args, set_config_args
 from data_processing import load_dataset
 from model import HeteroRGCN, HeteroLinkPredictionModel
+from draw_dgl import draw_able_graph_on_ax
+import matplotlib.pyplot as plt
 import numpy as np
 import time
+import statistics
 from ABLE_g import ABLEg
+from utils import evaluate_random_runs_ex
+
+
 
 parser = argparse.ArgumentParser(description='Explain link predictor')
 parser.add_argument('--device_id', type=int, default=-1)
@@ -21,11 +27,9 @@ parser.add_argument('--device_id', type=int, default=-1)
 Dataset args
 '''
 parser.add_argument('--dataset_dir', type=str, default='datasets')  # 数据集目录
-parser.add_argument('--dataset_name', type=str, default='lastfm')  # 数据集名称
+parser.add_argument('--dataset_name', type=str, default='lastfm')  # 数据集名称 lastfm,aug_citation,synthetic
 parser.add_argument('--valid_ratio', type=float, default=0.1)  # 验证集比例
 parser.add_argument('--test_ratio', type=float, default=0.2)  # 测试集比例
-parser.add_argument('--max_num_samples', type=int, default=-1,
-                    help='maximum number of samples to explain, for fast testing. Use all if -1')  # 最大预测样本数
 
 '''
 GNN args
@@ -49,16 +53,17 @@ parser.add_argument('--link_pred_op', type=str, default='dot', choices=['dot', '
 Explanation args
 '''
 parser.add_argument('--num_explain', type=int, default=5,
-                    help='number of test samples to explain')
-
+                    help='number of test samples to explain') #挑选多少个样本进行解释
+parser.add_argument('--num_neighbor', type=int, default=10,
+                    help='how much neighbor a sample generates') #一个样本生成多少个邻居
+parser.add_argument('--radius', type=float, default=0.5, help='neighborhood disturbance range')  # 对邻居点的干扰半径
 parser.add_argument('--lr', type=float, default=0.1, help='explainer learning_rate')  # 解释器的学习率
-parser.add_argument('--alpha', type=float, default=1.0, help='explainer on-path edge regularizer weight')  # 路径边正则化权重
-parser.add_argument('--beta', type=float, default=1.0, help='explainer off-path edge regularizer weight')  # 非路径边正则化权重
+parser.add_argument('--lambda_1', type=float, default=0.01, help='first-stage regularization weight')  # 第一阶段正则化权重
+parser.add_argument('--lambda_2', type=float, default=1, help='second-stage regularization weight')  # 第二阶段正则化权重
+parser.add_argument('--lambda_m', type=float, default=0.5, help='Second-stage residual scaling factor')  # 第二阶段残差缩放系数
 parser.add_argument('--num_hops', type=int, default=2, help='computation graph number of hops')  # 计算图的跳数，默认为2
-parser.add_argument('--num_epochs', type=int, default=100, help='How many epochs to learn the mask')  # 学习掩膜的训练轮数
-parser.add_argument('--num_paths', type=int, default=6, help='How many paths to generate')  # 生成的路径数量，默认40
-parser.add_argument('--max_path_length', type=int, default=5, help='max lenght of generated paths')  # 生成路径的最大长度，默认5
-parser.add_argument('--k_core', type=int, default=1, help='k for the k-core graph')  # k-core图k值，为2
+parser.add_argument('--num_epochs', type=int, default=25, help='How many epochs to learn the mask')  # 学习掩码的训练轮数
+parser.add_argument('--num_runs', type=int, default=4, help='How many tests to run')  # 测试轮数
 parser.add_argument('--prune_max_degree', type=int, default=200,
                     help='prune the graph such that all nodes have degree smaller than max_degree. No prune if -1')  # 剪枝最大度数，200
 parser.add_argument('--save_explanation', default=False, action='store_true',
@@ -66,17 +71,17 @@ parser.add_argument('--save_explanation', default=False, action='store_true',
 parser.add_argument('--saved_explanation_dir', type=str, default='saved_explanations',
                     help='directory of saved explanations')  # 保存解释的目录
 parser.add_argument('--config_path', type=str, default='', help='path of saved configuration args')  # 保存的配置参数路径
-'''
-Ablation args
-'''
-parser.add_argument('--HSM', type=int, default=0, help='CRETE w/o HSM')
-parser.add_argument('--HID_RAN', type=int, default=0, help='CRETE w/o HID RAN')
-parser.add_argument('--HID_AC', type=int, default=0, help='CRETE w/o HID AC')
-parser.add_argument('--CON', type=int, default=0, help='CRETE w/o CON')
+
 '''
 draw dgl
 '''
 parser.add_argument('--draw', type=int, default=0, help='draw dgl')
+
+'''
+Example:
+python ABLE_g_run.py --device_id 0 --dataset_name lastfm --radius 0.5 --num_epochs 25 --num_explain 100 --num_neighbor 10 --num_runs 4 
+python ABLE_g_run.py --device_id 0 --dataset_name lastfm --radius 0.3 --num_epochs 25 --num_explain 100 --num_neighbor 10 --num_runs 4
+'''
 
 args = parser.parse_args()
 
@@ -127,7 +132,14 @@ model = HeteroLinkPredictionModel(encoder, args.src_ntype, args.tgt_ntype, args.
 state = torch.load(f'{args.saved_model_dir}/{args.saved_model_name}.pth', map_location='cpu')
 model.load_state_dict(state)  # 初始化模型并加载预训练模型参数
 
-able_g = ABLEg(model, log=True).to(device) # init able explainer
+able_g = ABLEg(model,
+               lr=args.lr,
+               num_epochs=args.num_epochs,
+               log=True,
+               lambda_1=args.lambda_1,
+               lambda_2=args.lambda_2,
+               lambda_m=args.lambda_m,
+               ).to(device) # init able explainer
 
 # ========== ABLE-g explanation ==========
 test_src_nids, test_tgt_nids = test_pos_g.edges()
@@ -139,39 +151,99 @@ sample_ids = random.sample(test_ids, num_explain)
 
 print(f"\n[ABLE-g RUN] Explaining {num_explain} test samples\n")
 
-for idx in sample_ids:
-    src_nid = test_src_nids[idx].to(device)
-    tgt_nid = test_tgt_nids[idx].to(device)
 
-    print(f"\n>>> Test edge index: {idx}")
-    print(f">>> src_nid={int(src_nid)}, tgt_nid={int(tgt_nid)}")
-
-    # 原图上的预测（对照）
-    with torch.no_grad():
-        base_score = model(
-            src_nid.unsqueeze(0),
-            tgt_nid.unsqueeze(0),
-            mp_g
-        )
-        base_prob = base_score.sigmoid().item()
-
-    print(f"[Original graph prediction]")
-    print(f"  logit = {base_score.item():.6f}")
-    print(f"  prob  = {base_prob:.6f}")
-    print(f"  label = {int(base_prob > 0.5)}")
-
-    # ABLE-g explain
-    results = able_g.explain(
-        src_nid=src_nid,
-        tgt_nid=tgt_nid,
-        ghetero=mp_g,
-        radius=0.5,
-        n_samples=10,     # 调试阶段建议小一点
-        num_hops=args.num_hops
+overall_stats = evaluate_random_runs_ex(
+        able_g=able_g,
+        model=model,
+        mp_g=mp_g,
+        test_pos_g=test_pos_g,
+        num_explain=args.num_explain,
+        n_runs=args.num_runs,
+        nbh_n_samples=args.num_neighbor,
+        nbh_radius=args.radius,
+        num_hops=args.num_hops,
+        dataset_name=args.dataset_name,
+        num_epochs=args.num_epochs,
+        device=device
     )
 
-    print(f"[Summary] neighborhood predictions:")
-    for r in results:
-        print(f"  neigh {r['idx']}: score={r['score']}, pred={r['pred']}")
+print("Overall stats:", overall_stats)
+
+
+# for idx in sample_ids:
+#     src_nid = test_src_nids[idx].to(device)
+#     tgt_nid = test_tgt_nids[idx].to(device)
+#
+#     print(f"\n>>> Test edge index: {idx}")
+#     print(f">>> src_nid={int(src_nid)}, tgt_nid={int(tgt_nid)}")
+#
+#     # 原图上的预测（对照）
+#     with torch.no_grad():
+#         base_score = model(
+#             src_nid.unsqueeze(0),
+#             tgt_nid.unsqueeze(0),
+#             mp_g
+#         )
+#         base_prob = base_score.sigmoid().item()
+#
+#     # print(f"[Original graph prediction]")
+#     # print(f"  logit = {base_score.item():.6f}")
+#     # print(f"  prob  = {base_prob:.6f}")
+#     # print(f"  label = {int(base_prob > 0.5)}")
+#
+#     # ABLE-g explain
+#     results = able_g.explain(
+#         src_nid=src_nid,
+#         tgt_nid=tgt_nid,
+#         ghetero=mp_g,
+#         radius=0.5,
+#         n_samples=10,     # 调试阶段建议小一点
+#         num_hops=args.num_hops
+#     )
+
+    # print(f"[Summary] neighborhood predictions:")
+    # for r in results["predictions"]:
+    #     print(f"  neigh {r['idx']}: score={r['score']}, pred={r['pred']}")
+
+    # for r in results["adv_pairs"]:
+    #     fig, axes = plt.subplots(
+    #         nrows=1,
+    #         ncols=2,
+    #         figsize=(10, 5)
+    #     )
+    #     G_M = r["G_M"]
+    #     G_W = r["G_W"]
+    #     draw_able_graph_on_ax(
+    #         ax=axes[0],
+    #         ghetero=G_M["graph"],
+    #         edge_mask=G_M.get("edge_mask"),
+    #         src_nid=src_nid,
+    #         tgt_nid=tgt_nid,
+    #         title=f"G_M (pair {r['idx']})"
+    #     )
+    #
+    #     draw_able_graph_on_ax(
+    #         ax=axes[1],
+    #         ghetero=G_W["graph"],
+    #         edge_mask=G_W.get("edge_mask"),
+    #         src_nid=src_nid,
+    #         tgt_nid=tgt_nid,
+    #         title=f"G_W (pair {r['idx']})"
+    #     )
+    #
+    #     plt.tight_layout()
+    #     plt.show()
+    #     plt.close()
+    #     if r['idx']>1:
+    #         break
+
+
+
+
+
+
+
+
+
 
 
