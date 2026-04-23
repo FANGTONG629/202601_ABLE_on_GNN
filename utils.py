@@ -1119,7 +1119,9 @@ def get_homo_nid_pairs_to_etypes(ghetero):
 
 
 
-
+'''
+Running utils
+'''
 def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs=4,
                             nbh_n_samples=10, nbh_radius=0.5, num_hops=2, dataset_name="lastfm",
                             num_epochs=25, device=None, is_save_excel=None, is_save_explanation=None):
@@ -1151,6 +1153,7 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
     device = device or mp_g.device
     run_means_M = []
     run_means_W = []
+    run_means_Cond =[]
 
     print(f"[evaluate_random_runs] Starting evaluation with {n_runs} runs")
     print(f"[evaluate_random_runs] Total test samples: {num_test}")
@@ -1167,6 +1170,7 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
 
         sample_accs_M = []
         sample_accs_W = []
+        sample_accs_Cond = []
 
         run_start_time = datetime.now()
 
@@ -1253,6 +1257,7 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
             # 初始化计数器
             flipped_count_M = 0
             correct_count_W = 0
+            flipped_and_recovered_count = 0
             total_pairs = 0
 
             # 收集每个pair的详细信息
@@ -1284,13 +1289,18 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
                     print(f"orig={pred_orig}, M={pred_m}, W={pred_w}")
 
                     total_pairs += 1
-                    if pred_m != pred_orig:
+                    is_m_flipped = (pred_m != pred_orig)
+                    is_w_recovered = (pred_w == pred_orig)
+                    if is_m_flipped:
                         flipped_count_M += 1
                         pair_info["flipped"] = "YES"
+                        # 核心逻辑：只有在 M 翻转成功时，才检查 W 是否恢复成功
+                        if is_w_recovered:
+                            flipped_and_recovered_count += 1
                     else:
                         pair_info["flipped"] = "NO"
 
-                    if pred_w == pred_orig:
+                    if is_w_recovered:
                         correct_count_W += 1
                         pair_info["recovered"] = "YES"
                     else:
@@ -1308,9 +1318,11 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
             if total_pairs > 0:
                 flip_rate_M = flipped_count_M / total_pairs
                 recover_rate_W = correct_count_W / total_pairs
+                cond_recover_rate = flipped_and_recovered_count / flipped_count_M if flipped_count_M > 0 else 0.0
 
                 sample_accs_M.append(flip_rate_M)
                 sample_accs_W.append(recover_rate_W)
+                sample_accs_Cond.append(cond_recover_rate)
 
                 print(f"  Summary for this sample:")
                 print(f"    Total pairs: {total_pairs}")
@@ -1365,17 +1377,21 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
         if len(sample_accs_M) == 0:
             mean_M = 0.0
             mean_W = 0.0
+            mean_cond = 0.0
             print(f"[Run {run + 1}/{n_runs}] No valid samples processed")
         else:
             mean_M = float(np.mean(sample_accs_M))
             mean_W = float(np.mean(sample_accs_W))
+            mean_cond = float(np.mean(sample_accs_Cond))
             print(f"\n[Run {run + 1}/{n_runs}] Summary:")
             print(f"  Processed {len(sample_accs_M)} samples")
             print(f"  Mean flip rate (G_M): {mean_M:.4f}")
             print(f"  Mean recover rate (G_W): {mean_W:.4f}")
+            print(f"  Mean recover rate (G_W) based flip (G_M): {mean_cond:.4f}")
 
         run_means_M.append(mean_M)
         run_means_W.append(mean_W)
+        run_means_Cond.append(mean_cond)
 
         # 记录run摘要信息
         run_summary = {
@@ -1383,6 +1399,7 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
             "num_samples": len(sample_accs_M),
             "mean_flip_rate_M": mean_M,
             "mean_recover_rate_W": mean_W,
+            "mean_flip_rate_W_based_m": mean_cond,
             "duration_seconds": run_duration,
             "timestamp": run_end_time.strftime("%H:%M:%S")
         }
@@ -1409,7 +1426,10 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
             'M_mean_of_runs': float(np.mean(run_means_M)),
             'M_std_of_runs': float(np.std(run_means_M, ddof=1)) if len(run_means_M) > 1 else 0.0,
             'W_mean_of_runs': float(np.mean(run_means_W)),
-            'W_std_of_runs': float(np.std(run_means_W, ddof=1)) if len(run_means_W) > 1 else 0.0
+            'W_std_of_runs': float(np.std(run_means_W, ddof=1)) if len(run_means_W) > 1 else 0.0,
+            'Cond_means': run_means_Cond,
+            'Cond_mean_of_runs': float(np.mean(run_means_Cond)),
+            'Cond_std_of_runs': float(np.std(run_means_Cond, ddof=1)) if len(run_means_Cond) > 1 else 0.0,
         }
 
     print("\n" + "=" * 60)
@@ -1417,69 +1437,81 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
     print("=" * 60)
     print(f"G_M Flip Rates across runs: {overall['M_means']}")
     print(f"G_W Recover Rates across runs: {overall['W_means']}")
+    print(f"G_W|G_M_flip Rates across runs: {overall['Cond_means']}")  # 新增
+    print("-" * 30)
     print(f"G_M: Mean over {len(run_means_M)} runs = {overall['M_mean_of_runs']:.4f} ± {overall['M_std_of_runs']:.4f}")
     print(f"G_W: Mean over {len(run_means_W)} runs = {overall['W_mean_of_runs']:.4f} ± {overall['W_std_of_runs']:.4f}")
+    print(f"G_W|G_M_flip: {overall['Cond_mean_of_runs']:.4f} ± {overall['Cond_std_of_runs']:.4f}")
     print("=" * 60)
 
     # （只有is_save_excel时）创建DataFrame并保存到Excel
     if is_save_excel and writer is not None:
         try:
-            # 1. Pair级别的详细信息
-            if all_debug_info:
-                df_pairs = pd.DataFrame(all_debug_info)
-                df_pairs.to_excel(writer, sheet_name='Pair_Details', index=False)
-                print(f"Saved {len(df_pairs)} pair details to Pair_Details sheet")
-
-            # 2. 样本级别的摘要信息
-            if sample_summary_data:
-                df_samples = pd.DataFrame(sample_summary_data)
-                df_samples.to_excel(writer, sheet_name='Sample_Summary', index=False)
-                print(f"Saved {len(df_samples)} sample summaries to Sample_Summary sheet")
-
-            # 3. Run级别的摘要信息
-            if run_summary_data:
-                df_runs = pd.DataFrame(run_summary_data)
-                df_runs.to_excel(writer, sheet_name='Run_Summary', index=False)
-                print(f"Saved {len(df_runs)} run summaries to Run_Summary sheet")
-
-            # 4. 整体统计信息
-            overall_stats = pd.DataFrame([{
-                'M_mean_of_runs': overall['M_mean_of_runs'],
-                'M_std_of_runs': overall['M_std_of_runs'],
-                'W_mean_of_runs': overall['W_mean_of_runs'],
-                'W_std_of_runs': overall['W_std_of_runs'],
-                'total_runs': len(run_means_M),
-                'num_explain_per_run': num_explain,
-                'n_samples': nbh_n_samples,
-                'radius': nbh_radius,
-                'num_hops': num_hops,
-                'execution_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }])
-            overall_stats.to_excel(writer, sheet_name='Overall_Stats', index=False)
-            print(f"Saved overall statistics to Overall_Stats sheet")
-
-            # 5. 原始run数据（用于绘制图表）
-            run_data = pd.DataFrame({
-                'run': list(range(1, len(run_means_M) + 1)),
-                'flip_rate_M': run_means_M,
-                'recover_rate_W': run_means_W
-            })
-            run_data.to_excel(writer, sheet_name='Raw_Run_Data', index=False)
-            print(f"Saved raw run data to Raw_Run_Data sheet")
+            # # 1. Pair级别的详细信息
+            # if all_debug_info:
+            #     df_pairs = pd.DataFrame(all_debug_info)
+            #     df_pairs.to_excel(writer, sheet_name='Pair_Details', index=False)
+            #     print(f"Saved {len(df_pairs)} pair details to Pair_Details sheet")
+            #
+            # # 2. 样本级别的摘要信息
+            # if sample_summary_data:
+            #     df_samples = pd.DataFrame(sample_summary_data)
+            #     df_samples.to_excel(writer, sheet_name='Sample_Summary', index=False)
+            #     print(f"Saved {len(df_samples)} sample summaries to Sample_Summary sheet")
+            #
+            # # 3. Run级别的摘要信息
+            # if run_summary_data:
+            #     df_runs = pd.DataFrame(run_summary_data)
+            #     df_runs.to_excel(writer, sheet_name='Run_Summary', index=False)
+            #     print(f"Saved {len(df_runs)} run summaries to Run_Summary sheet")
+            #
+            # # 4. 整体统计信息
+            # overall_stats = pd.DataFrame([{
+            #     'M_mean_of_runs': overall['M_mean_of_runs'],
+            #     'M_std_of_runs': overall['M_std_of_runs'],
+            #     'W_mean_of_runs': overall['W_mean_of_runs'],
+            #     'W_std_of_runs': overall['W_std_of_runs'],
+            #     'total_runs': len(run_means_M),
+            #     'num_explain_per_run': num_explain,
+            #     'n_samples': nbh_n_samples,
+            #     'radius': nbh_radius,
+            #     'num_hops': num_hops,
+            #     'execution_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # }])
+            # overall_stats.to_excel(writer, sheet_name='Overall_Stats', index=False)
+            # print(f"Saved overall statistics to Overall_Stats sheet")
+            #
+            # # 5. 原始run数据（用于绘制图表）
+            # run_data = pd.DataFrame({
+            #     'run': list(range(1, len(run_means_M) + 1)),
+            #     'flip_rate_M': run_means_M,
+            #     'recover_rate_W': run_means_W
+            # })
+            # run_data.to_excel(writer, sheet_name='Raw_Run_Data', index=False)
+            # print(f"Saved raw run data to Raw_Run_Data sheet")
 
             # 6. 最终统计摘要信息（新增部分）
             final_summary_data = []
             final_summary_data.append(["FINAL SUMMARY OF ALL RUNS"])
-            final_summary_data.append(["=" * 50])
-            final_summary_data.append(["G_M Flip Rates across runs:", str(overall['M_means'])])
-            final_summary_data.append(["G_W Recover Rates across runs:", str(overall['W_means'])])
-            final_summary_data.append([f"G_M: Mean over {len(run_means_M)} runs =",
-                                       f"{overall['M_mean_of_runs']:.4f} ± {overall['M_std_of_runs']:.4f}"])
-            final_summary_data.append([f"G_W: Mean over {len(run_means_W)} runs =",
-                                       f"{overall['W_mean_of_runs']:.4f} ± {overall['W_std_of_runs']:.4f}"])
-            final_summary_data.append(["=" * 50])
-            final_summary_data.append(["Generated at:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+            # 使用 join 替代 str()，生成更整洁的文本，避免 Excel 误判为数组公式
+            m_means_str = ", ".join([f"{x:.4f}" for x in overall['M_means']])
+            w_means_str = ", ".join([f"{x:.4f}" for x in overall['W_means']])
+            cond_means_str = ", ".join([f"{x:.4f}" for x in overall['Cond_means']])
 
+            final_summary_data.append(["G_M Flip Rates:", m_means_str])
+            final_summary_data.append(["G_W Recover Rates:", w_means_str])
+            final_summary_data.append(["G_W|G_M Flip Rates:", cond_means_str])
+
+            final_summary_data.append([f"G_M Mean ({len(run_means_M)} runs)",
+                                       f"{overall['M_mean_of_runs']:.4f} ± {overall['M_std_of_runs']:.4f}"])
+            final_summary_data.append([f"G_W Mean ({len(run_means_W)} runs)",
+                                       f"{overall['W_mean_of_runs']:.4f} ± {overall['W_std_of_runs']:.4f}"])
+            final_summary_data.append([f"G_W|G_M Mean",
+                                       f"{overall['Cond_mean_of_runs']:.4f} ± {overall['Cond_std_of_runs']:.4f}"])
+
+            final_summary_data.append(["Generated at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+
+            # 关键修改点：显式指定副本，不要带索引
             df_final_summary = pd.DataFrame(final_summary_data)
             df_final_summary.to_excel(writer, sheet_name='Final_Summary', index=False, header=False)
             print(f"Saved final summary to Final_Summary sheet")

@@ -131,7 +131,7 @@ class ABLEg(nn.Module):
                             feat_nids,
                             ghetero,
                             radius=0.5,
-                            n_samples=100,
+                            n_samples=10,
                             random_seed=42
                             ):
         rng = random.Random(random_seed)

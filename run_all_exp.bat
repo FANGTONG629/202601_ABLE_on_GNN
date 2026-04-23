@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 :: --- 配置列表 ---
-set DATASET_LIST=ACM lastfm aug_citation
+set DATASET_LIST=lastfm aug_citation ACM
 set RADIUS_LIST=0.1 0.3 0.5 0.7 0.9
 
 :: --- 固定参数 ---
@@ -12,7 +12,7 @@ set EXPLAIN=100
 set NEIGHBOR=10
 set RUNS=4
 set HOPS=2
-set L1=0.1
+set L1=0.001
 set L2=0.01
 
 :: 初始化日志
@@ -48,7 +48,8 @@ for %%d in (%DATASET_LIST%) do (
             --hidden_dim !DIM! ^
             --out_dim !DIM! ^
             --lambda_1 %L1% ^
-            --lambda_2 %L2% >> experiment.log 2>&1
+            --lambda_2 %L2% >> experiment.log 2>&1 ^
+            --save_excel
     )
 )
 

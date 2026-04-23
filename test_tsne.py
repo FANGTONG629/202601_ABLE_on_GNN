@@ -109,7 +109,7 @@ def visualize_neighborhood_tsne(model, exres, title="Decision Boundary Explorati
     vis_2d = tsne.fit_transform(all_embeddings)
 
     # --- 分组绘图 ---
-    plt.figure(figsize=(12, 9))
+    plt.figure(figsize=(7, 5))
 
     for i in range(len(vis_2d)):
         p_type = point_types[i]
@@ -121,39 +121,65 @@ def visualize_neighborhood_tsne(model, exres, title="Decision Boundary Explorati
         # A. 处理邻居子图 (空心正方形 's')
         if p_type == "NEIGH":
             color = 'black' if p_label == 1 else 'gray'
-            size = 180 if p_idx == 0 else 80  # 第一个邻居加粗加大
-            edge_w = 3 if p_idx == 0 else 1.5
-            plt.scatter(x, y, marker='s', s=size, edgecolors=color,
+            size = 200 if p_idx == 0 else 120  # 第一个邻居加粗加大
+            edge_w = 5.5 if p_idx == 0 else 2.0
+            plt.scatter(x, y, marker='o', s=size, edgecolors=color,
                         facecolors='none', linewidths=edge_w,
                         label="Neighbor" if i == 0 else "")  # 避免重复图例
 
         # B. 处理对抗对 G_M (x型)
         elif p_type == "GM":
             color = 'darkblue' if p_label == 'G_M (Pred: 1)' else 'lightblue'
-            plt.scatter(x, y, marker='x', s=100, c=color, alpha=0.8)
+            plt.scatter(x, y, marker='o', s=150, c=color, alpha=0.8)
 
         # C. 处理对抗对 G_W (o型)
         elif p_type == "GW":
-            color = 'darkred' if p_label == 'G_W (Pred: 1)' else 'mistyrose'
-            plt.scatter(x, y, marker='o', s=100, c=color, alpha=0.8)
+            color = 'darkblue' if p_label == 'G_W (Pred: 1)' else 'lightblue'
+            plt.scatter(x, y, marker='o', s=150, c=color, alpha=0.8)
+        # if p_type == "NEIGH":
+        #     color = 'black' if p_label == 1 else 'gray'
+        #     size = 220 if p_idx == 0 else 120  # 第一个邻居加粗加大
+        #     edge_w = 3 if p_idx == 0 else 1.5
+        #     plt.scatter(x, y, marker='s', s=size, edgecolors=color,
+        #                 facecolors='none', linewidths=edge_w,
+        #                 label="Neighbor" if i == 0 else "")  # 避免重复图例
+        #
+        # # B. 处理对抗对 G_M (x型)
+        # elif p_type == "GM":
+        #     color = 'darkblue' if p_label == 'G_M (Pred: 1)' else 'lightblue'
+        #     plt.scatter(x, y, marker='x', s=100, c=color, alpha=0.8)
+        #
+        # # C. 处理对抗对 G_W (o型)
+        # elif p_type == "GW":
+        #     color = 'darkred' if p_label == 'G_W (Pred: 1)' else 'mistyrose'
+        #     plt.scatter(x, y, marker='o', s=100, c=color, alpha=0.8)
 
     # 手动构建图例，防止重复
     from matplotlib.lines import Line2D
     legend_elements = [
-        Line2D([0], [0], marker='s', color='black', label='Neighbor (Pred 1)', markerfacecolor='none', markersize=10,
+        Line2D([0], [0], marker='o', color='black', label='Neighbor (Pred 1)', markerfacecolor='none', markersize=10,
                linestyle='None'),
-        Line2D([0], [0], marker='s', color='gray', label='Neighbor (Pred 0)', markerfacecolor='none', markersize=10,
+        Line2D([0], [0], marker='o', color='gray', label='Neighbor (Pred 0)', markerfacecolor='none', markersize=10,
                linestyle='None'),
-        Line2D([0], [0], marker='x', color='darkblue', label='G_M (Pred 1)', markersize=10, linestyle='None'),
-        Line2D([0], [0], marker='x', color='lightblue', label='G_M (Pred 0)', markersize=10, linestyle='None'),
-        Line2D([0], [0], marker='o', color='darkred', label='G_W (Pred 1)', markersize=10, linestyle='None'),
-        Line2D([0], [0], marker='o', color='mistyrose', label='G_W (Pred 0)', markersize=10, linestyle='None'),
+        Line2D([0], [0], marker='o', color='darkblue', label='G_M/G_W (Pred 1)', markersize=10, linestyle='None'),
+        Line2D([0], [0], marker='o', color='lightblue', label='G_M/G_W (Pred 0)', markersize=10, linestyle='None'),
     ]
-    plt.legend(handles=legend_elements, bbox_to_anchor=(1.05, 1), loc='upper left')
+    # legend_elements = [
+    #     Line2D([0], [0], marker='s', color='black', label='Neighbor (Pred 1)', markerfacecolor='none', markersize=10,
+    #            linestyle='None'),
+    #     Line2D([0], [0], marker='s', color='gray', label='Neighbor (Pred 0)', markerfacecolor='none', markersize=10,
+    #            linestyle='None'),
+    #     Line2D([0], [0], marker='x', color='darkblue', label='G_M (Pred 1)', markersize=10, linestyle='None'),
+    #     Line2D([0], [0], marker='x', color='lightblue', label='G_M (Pred 0)', markersize=10, linestyle='None'),
+    #     Line2D([0], [0], marker='o', color='darkred', label='G_W (Pred 1)', markersize=10, linestyle='None'),
+    #     Line2D([0], [0], marker='o', color='mistyrose', label='G_W (Pred 0)', markersize=10, linestyle='None'),
+    # ]
+    #plt.legend(handles=legend_elements, bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.legend(handles=legend_elements, loc='best', fontsize='small', framealpha=0.6)
 
     plt.title(f"t-SNE Visualization: {title}")
     plt.grid(True, alpha=0.3)
-    plt.savefig(tsne_config['save_dir'],bbox_inches='tight')
+    plt.savefig(tsne_config['save_dir'],bbox_inches='tight',transparent=False)
 
     # 未画邻域样本点
     # all_graph_h = []
