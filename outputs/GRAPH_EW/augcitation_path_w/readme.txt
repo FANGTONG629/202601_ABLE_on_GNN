@@ -1,0 +1,1 @@
+pathv里单数行是nb-gm，双数行是gm-gw

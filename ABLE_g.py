@@ -136,11 +136,6 @@ class ABLEg(nn.Module):
                             ):
         rng = random.Random(random_seed)
 
-        ntype_hetero_nids_to_homo_nids = get_ntype_hetero_nids_to_homo_nids(ghetero)
-        homo_src_nid = ntype_hetero_nids_to_homo_nids[(self.src_ntype, int(src_nid))]
-        homo_tgt_nid = ntype_hetero_nids_to_homo_nids[(self.tgt_ntype, int(tgt_nid))]
-
-
         neighborhoods = [{
             "g": ghetero,
             "src_nid": src_nid,
@@ -482,183 +477,14 @@ class ABLEg(nn.Module):
                 "pred_w": pred_w
             })
 
+
         return {
+            "src_ntype": self.src_ntype,
+            "tgt_ntype": self.tgt_ntype,
             "predictions": results,
             "adv_pairs": adv_pairs
         }
 
-
-
-    # def explain(self,
-    #             src_nid,
-    #             tgt_nid,
-    #             ghetero,
-    #             radius=0.5,
-    #             n_samples=50,
-    #             clip_min=None,
-    #             clip_max=None,
-    #             random_seed=42,
-    #             num_hops=2):
-    #     """
-    #     For a given (src_nid, tgt_nid):
-    #     1. generate neighborhood subgraphs
-    #     2. run link prediction on each neighborhood
-    #     3. return prediction results (0/1) with detailed logs
-    #     """
-    #
-    #     print("=" * 80)
-    #     print(f"[ABLE-g] Explain link: "
-    #           f"({self.src_ntype}, {int(src_nid)}) -> ({self.tgt_ntype}, {int(tgt_nid)})")
-    #
-    #     # ---------- Step 1: generate neighborhoods ----------
-    #     neighborhoods = self.generate_neiborhood(
-    #         src_nid=src_nid,
-    #         tgt_nid=tgt_nid,
-    #         ghetero=ghetero,
-    #         radius=radius,
-    #         n_samples=n_samples,
-    #         clip_min=clip_min,
-    #         clip_max=clip_max,
-    #         random_seed=random_seed,
-    #         num_hops=num_hops
-    #     )
-    #
-    #     print(f"[ABLE-g] Generated {len(neighborhoods)} neighborhood subgraphs")
-    #
-    #     results = []
-    #
-    #     # ---------- Step 2: inference on each neighborhood ----------
-    #     self.model.eval()
-    #     with torch.no_grad():
-    #         for idx, nb in enumerate(neighborhoods):
-    #             sg = nb["g"]
-    #             sg_src = nb["src_nid"]
-    #             sg_tgt = nb["tgt_nid"]
-    #
-    #
-    #             # 推理
-    #             score = self.model(
-    #                 sg_src.unsqueeze(0),
-    #                 sg_tgt.unsqueeze(0),
-    #                 sg
-    #             )
-    #
-    #             prob = score.sigmoid().item()
-    #             label = int(prob > 0.5)
-    #
-    #             # ---------- Debug info ----------
-    #             print("-" * 60)
-    #             print(f"[Neighborhood {idx}]")
-    #             print(f"Nodes:")
-    #             for ntype in sg.ntypes:
-    #                 print(f"  {ntype}: {sg.num_nodes(ntype)}")
-    #
-    #             print(f"Edges:")
-    #             for etype in sg.canonical_etypes:
-    #                 print(f"  {etype}: {sg.num_edges(etype)}")
-    #
-    #             print(f"Prediction:")
-    #             print(f"  logit = {score.item():.6f}")
-    #             print(f"  prob  = {prob:.6f}")
-    #             print(f"  label = {label}")
-    #
-    #             results.append({
-    #                 "neigh_id": idx,
-    #                 "logit": score.item(),
-    #                 "prob": prob,
-    #                 "label": label
-    #             })
-    #
-    #     print(f"[ABLE-g] Finished explanation")
-    #     print("=" * 80)
-    #
-    #     return results
-
-# 动态lambda方法
-class AdaptiveLambda:
-    def __init__(self, initial_lambda=0.1):
-        self.lambda_reg = initial_lambda
-        self.pred_loss_history = []
-        self.reg_loss_history = []
-
-    def update(self, pred_loss, reg_loss, epoch):
-        # 记录历史损失
-        self.pred_loss_history.append(pred_loss.item())
-        self.reg_loss_history.append(reg_loss.item())
-
-        # 每10个epoch调整一次
-        if epoch % 10 == 0 and len(self.pred_loss_history) >= 10:
-            avg_pred = np.mean(self.pred_loss_history[-10:])
-            avg_reg = np.mean(self.reg_loss_history[-10:])
-
-            # 动态调整：保持两个损失项量级平衡
-            if avg_reg > 0:
-                loss_ratio = avg_pred / avg_reg
-                # 如果pred_loss主导，增强正则化
-                if loss_ratio > 5:
-                    self.lambda_reg *= 1.1
-                # 如果reg_loss主导，减弱正则化
-                elif loss_ratio < 2:
-                    self.lambda_reg *= 0.9
-
-        return self.lambda_reg
-
-
-# # 使用示例
-# adaptive_lambda = AdaptiveLambda(initial_lambda=0.1)
-# for epoch in range(num_epochs):
-#     lambda_reg = adaptive_lambda.update(pred_loss, reg_loss, epoch)
-#     total_loss = pred_loss + lambda_reg * reg_loss
-
-
-# 其他候选边策略
-# def generate_advanced_candidate_edges(g, etype, strategy="mixed", **kwargs):
-#     """
-#     进阶候选边生成策略
-#     """
-#     if strategy == "degree_based":
-#         return _degree_based_candidates(g, etype, **kwargs)
-#     elif strategy == "similarity_based":
-#         return _similarity_based_candidates(g, etype, **kwargs)
-#     elif strategy == "random_walk":
-#         return _random_walk_candidates(g, etype, **kwargs)
-#     else:  # mixed
-#         return _mixed_candidates(g, etype, **kwargs)
-#
-#
-# def _degree_based_candidates(g, etype, top_k=10):
-#     """基于节点度数的候选边"""
-#     src_type, _, dst_type = etype
-#     src_nodes = g.nodes(src_type)
-#     dst_nodes = g.nodes(dst_type)
-#
-#     # 计算度数
-#     src_degrees = g.in_degrees(etype=etype)
-#     dst_degrees = g.in_degrees(etype=etype)
-#
-#     # 选择高度数节点
-#     top_src = src_nodes[torch.topk(src_degrees, min(top_k, len(src_nodes))[1]]
-#     top_dst = dst_nodes[torch.topk(dst_degrees, min(top_k, len(dst_nodes))[1]]
-#
-#     candidate_edges = []
-#     for u in top_src:
-#         for
-#     v in top_dst:
-#     if u != v and not g.has_edges_between(u, v, etype=etype):
-#         candidate_edges.append((u.item(), v.item()))
-#
-#     return candidate_edges[:100]  # 限制数量
-#
-#
-# def _mixed_candidates(g, etype, basic_ratio=0.7, advanced_ratio=0.3):
-#     """混合策略：基础+进阶"""
-#     basic_edges = generate_candidate_edges(g, etype)
-#     advanced_edges = _degree_based_candidates(g, etype)
-#
-#     total_basic = int(len(basic_edges) * basic_ratio)
-#     total_advanced = int(len(basic_edges) * advanced_ratio)
-#
-#     mixed_edges = basic_edges[:total_basic] + advanced_edges[:total_advanced]
-#     random.shuffle(mixed_edges)
-#
-#     return mixed_edges
+    def get_lambda(self, idx=1):
+        if idx == 2: return self.lambda_2
+        else: return self.lambda_1

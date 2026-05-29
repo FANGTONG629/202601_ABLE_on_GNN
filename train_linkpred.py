@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 import copy
 import argparse
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, f1_score
 from pathlib import Path
 from utils import set_seed, negative_sampling, print_args, set_config_args
 from data_processing import load_dataset
@@ -93,6 +93,26 @@ def compute_auc(pos_score, neg_score):
         [torch.ones(pos_score.shape[0]), torch.zeros(neg_score.shape[0])]).numpy()
     return roc_auc_score(labels, scores)
 
+
+def compute_f1(pos_score, neg_score):
+    """
+    仿照 compute_auc 编写的 F1 指数计算函数
+    """
+    # 1. 拼接正负样本分值并转为概率
+    scores = torch.cat([pos_score, neg_score])
+    probs = torch.sigmoid(scores).detach().cpu().numpy()
+
+    # 2. 以 0.5 为阈值生成预测标签
+    preds = (probs > 0.5).astype(int)
+
+    # 3. 生成真实标签
+    labels = torch.cat(
+        [torch.ones(pos_score.shape[0]), torch.zeros(neg_score.shape[0])]).numpy()
+
+    # 4. 计算 F1 分数
+    return f1_score(labels, preds)
+
+
 def run():
     set_seed(0)
     best_val_auc = 0
@@ -106,6 +126,7 @@ def run():
     train_neg_src_nids, train_neg_tgt_nids = train_neg_g.edges(etype=pred_etype) 
 
     for epoch in range(1, args.num_epochs+1):
+        model.train()
         train_pos_score = model(train_pos_src_nids, train_pos_tgt_nids, mp_g)   
         if args.sample_neg_edges:
             train_neg_src_nids, train_neg_tgt_nids = negative_sampling(train_pos_g, pred_etype) 
@@ -118,11 +139,15 @@ def run():
 
         if epoch % args.eval_interval == 0:
             with torch.no_grad():
+                model.eval()
                 train_auc = compute_auc(train_pos_score, train_neg_score)
+                train_f1 = compute_f1(train_pos_score, train_neg_score)  # 计算训练集 F1
                 val_pos_score = model(val_pos_src_nids, val_pos_tgt_nids, mp_g)
                 val_neg_score = model(val_neg_src_nids, val_neg_tgt_nids, mp_g)
                 val_auc = compute_auc(val_pos_score, val_neg_score)
-                print('In epoch {}, loss: {:.4f}, train AUC: {:.4f}, val AUC: {:.4f}'.format(epoch, loss, train_auc, val_auc))
+                val_f1 = compute_f1(val_pos_score, val_neg_score)  # 计算验证集 F1
+                print('In epoch {}, loss: {:.4f}, train AUC: {:.4f}, F1: {:.4f}; val AUC: {:.4f}, F1: {:.4f}'
+                      .format(epoch, loss, train_auc, train_f1, val_auc, val_f1))
                 if val_auc > best_val_auc:
                     best_epoch = epoch
                     best_val_auc = val_auc
@@ -134,7 +159,9 @@ def run():
         test_pos_score = model(test_pos_src_nids, test_pos_tgt_nids, mp_g)
         test_neg_score = model(test_neg_src_nids, test_neg_tgt_nids, mp_g)
         test_auc = compute_auc(test_pos_score, test_neg_score)
-        print('Best epoch {}, val AUC: {:.4f}, test AUC: {:.4f}'.format(best_epoch, best_val_auc, test_auc))
+        test_f1 = compute_f1(test_pos_score, test_neg_score)  # 计算测试集 F1
+        print('Best epoch {}, val AUC: {:.4f}, test AUC: {:.4f}, test F1: {:.4f}'
+              .format(best_epoch, best_val_auc, test_auc, test_f1))
 
 processed_g = load_dataset(args.dataset_dir, args.dataset_name, args.valid_ratio, args.test_ratio)[1]
 mp_g, train_pos_g, train_neg_g, val_pos_g, val_neg_g, test_pos_g, test_neg_g = [g.to(device) for g in processed_g]

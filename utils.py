@@ -14,8 +14,8 @@ from heapq import heappop, heappush
 from sklearn.metrics import roc_auc_score
 import pandas as pd
 from datetime import datetime
-from test_tsne import visualize_neighborhood_tsne
-from draw_dgl import draw_able_graph, draw_able_graph_eweight
+from draw_tsne import visualize_neighborhood_tsne
+from draw_dgl import draw_able_graph, draw_able_graph_eweight, draw_able_weight_path, count_able_weight_path
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -345,7 +345,7 @@ Path finding utils
 def get_neg_path_score_func(g, weight, exclude_node=[]):
     '''
     Compute the negative path score for the shortest path algorithm.
-    
+
     Parameters
     ----------
     g : dgl graph
@@ -359,7 +359,7 @@ def get_neg_path_score_func(g, weight, exclude_node=[]):
     Returns
     ----------
     neg_path_score_func: callable function
-       Takes in two node ids and return the edge weight. 
+       Takes in two node ids and return the edge weight.
     '''
     log_eweights = g.edata[weight].log().tolist()
     log_in_degrees = g.in_degrees().log()
@@ -374,10 +374,10 @@ def get_neg_path_score_func(g, weight, exclude_node=[]):
 
 def bidirectional_dijkstra(g, src_nid, tgt_nid, weight=None, ignore_nodes=None, ignore_edges=None):
     """Dijkstra's algorithm for shortest paths using bidirectional search.
-    
+
     Adapted from NetworkX _bidirectional_dijkstra
     https://networkx.org/documentation/stable/_modules/networkx/algorithms/simple_paths.html
-    
+
     Parameters
     ----------
     g : dgl graph
@@ -388,8 +388,8 @@ def bidirectional_dijkstra(g, src_nid, tgt_nid, weight=None, ignore_nodes=None, 
     tgt_nid : int
         target node id
 
-    weight: callable function, optional 
-       Takes in two node ids and return the edge weight. 
+    weight: callable function, optional
+       Takes in two node ids and return the edge weight.
 
     ignore_nodes : container of nodes
        nodes to ignore, optional
@@ -409,7 +409,7 @@ def bidirectional_dijkstra(g, src_nid, tgt_nid, weight=None, ignore_nodes=None, 
     src, tgt = g.edges()
     Gpred = lambda i: src[tgt == i].tolist()
     Gsucc = lambda i: tgt[src == i].tolist()
-    
+
     if ignore_nodes:
         def filter_iter(nodes):
             def iterate(v):
@@ -421,7 +421,7 @@ def bidirectional_dijkstra(g, src_nid, tgt_nid, weight=None, ignore_nodes=None, 
 
         Gpred = filter_iter(Gpred)
         Gsucc = filter_iter(Gsucc)
-    
+
     if ignore_edges:
         def filter_pred_iter(pred_iter):
             def iterate(v):
@@ -463,7 +463,7 @@ def bidirectional_dijkstra(g, src_nid, tgt_nid, weight=None, ignore_nodes=None, 
     dir = 1
     if not weight:
         weight = lambda u, v: 1
-            
+
     while fringe[0] and fringe[1]:
         # choose direction
         # dir == 0 is forward direction and dir == 1 is back
@@ -510,7 +510,7 @@ def bidirectional_dijkstra(g, src_nid, tgt_nid, weight=None, ignore_nodes=None, 
 
 class PathBuffer:
     """For shortest paths finding
-    
+
     Adapted from NetworkX shortest_simple_paths
     https://networkx.org/documentation/stable/_modules/networkx/algorithms/simple_paths.html
 
@@ -534,16 +534,16 @@ class PathBuffer:
         hashable_path = tuple(path)
         self.paths.remove(hashable_path)
         return path
-    
-def k_shortest_paths_generator(g, 
-                               src_nid, 
-                               tgt_nid, 
-                               weight=None, 
-                               k=5, 
+
+def k_shortest_paths_generator(g,
+                               src_nid,
+                               tgt_nid,
+                               weight=None,
+                               k=5,
                                ignore_nodes_init=None,
                                ignore_edges_init=None):
     """Generate at most `k` simple paths in the graph g from src_nid to tgt_nid,
-       each with maximum lenghth `max_length`, return starting from the shortest ones. 
+       each with maximum lenghth `max_length`, return starting from the shortest ones.
        If a weighted shortest path search is to be used, no negative weights are allowed.
 
     Adapted from NetworkX shortest_simple_paths
@@ -559,12 +559,12 @@ def k_shortest_paths_generator(g,
     tgt_nid : int
         target node id
 
-    weight: callable function, optional 
-       Takes in two node ids and return the edge weight. 
+    weight: callable function, optional
+       Takes in two node ids and return the edge weight.
 
     k: int
        number of paths
-    
+
     ignore_nodes_init : set of nodes
        nodes to ignore, optional
 
@@ -612,7 +612,7 @@ def k_shortest_paths_generator(g,
                 except ValueError:
                     pass
                 ignore_nodes.add(root[-1])
-        
+
         if listB:
             path = listB.pop()
             yield path
@@ -621,36 +621,36 @@ def k_shortest_paths_generator(g,
         else:
             break
 
-def k_shortest_paths_with_max_length(g, 
-                                     src_nid, 
-                                     tgt_nid, 
-                                     weight=None, 
-                                     k=5, 
+def k_shortest_paths_with_max_length(g,
+                                     src_nid,
+                                     tgt_nid,
+                                     weight=None,
+                                     k=5,
                                      max_length=None,
                                      ignore_nodes=None,
                                      ignore_edges=None):
-    
+
     """Generate at most `k` simple paths in the graph g from src_nid to tgt_nid,
-       each with maximum lenghth `max_length`, return starting from the shortest ones. 
+       each with maximum lenghth `max_length`, return starting from the shortest ones.
        If a weighted shortest path search is to be used, no negative weights are allowed.
-   
+
     Parameters
     ----------
        See function `k_shortest_paths_generator`
-   
+
     Return
     -------
     paths: list of lists
        Each list is a path containing node ids
     """
-    path_generator = k_shortest_paths_generator(g, 
-                                                src_nid, 
-                                                tgt_nid, 
+    path_generator = k_shortest_paths_generator(g,
+                                                src_nid,
+                                                tgt_nid,
                                                 weight=weight,
-                                                k=k, 
+                                                k=k,
                                                 ignore_nodes_init=ignore_nodes,
                                                 ignore_edges_init=ignore_edges)
-    
+
     try:
         if max_length:
             paths = [path for path in path_generator if len(path) <= max_length + 1]
@@ -898,6 +898,111 @@ def eval_path_explanation_edges_path_hit(path_explanation_edges, path_labels):
             return 1
     return 0
 
+def get_paths(src_nid,
+              src_ntype,
+              tgt_nid,
+              tgt_ntype,
+              ghetero,
+              edge_mask_dict,
+              num_paths=1,
+              max_path_length=None):
+
+    ntype_pairs_to_cannonical_etypes = get_ntype_pairs_to_cannonical_etypes(ghetero)
+    eweight_dict = {etype: edge_mask_dict[etype].abs().clamp(min=1e-6) for etype in edge_mask_dict}
+    ghetero.edata['eweight'] = eweight_dict
+
+    # convert ghetero to ghomo and find paths
+    ghomo = dgl.to_homogeneous(ghetero, edata=['eweight'])
+    ghomo_bi = dgl.add_reverse_edges(ghomo, copy_edata=True)
+
+    ntype_hetero_nids_to_homo_nids = get_ntype_hetero_nids_to_homo_nids(ghetero)
+    homo_src_nid = ntype_hetero_nids_to_homo_nids[(src_ntype, int(src_nid))]
+    homo_tgt_nid = ntype_hetero_nids_to_homo_nids[(tgt_ntype, int(tgt_nid))]
+
+    neg_path_score_func = get_neg_path_score_func(ghomo_bi, 'eweight', [homo_src_nid, homo_tgt_nid])
+    homo_paths = k_shortest_paths_with_max_length(ghomo_bi,
+                                                   homo_src_nid,
+                                                   homo_tgt_nid,
+                                                   weight=neg_path_score_func,
+                                                   k=num_paths,
+                                                   max_length=max_path_length)
+
+    paths = []
+    homo_nids_to_ntype_hetero_nids = get_homo_nids_to_ntype_hetero_nids(ghetero)
+
+    if len(homo_paths) > 0:
+        for homo_path in homo_paths:
+            hetero_path = []
+            for i in range(1, len(homo_path)):
+                homo_u, homo_v = homo_path[i-1], homo_path[i]
+                hetero_u_ntype, hetero_u_nid = homo_nids_to_ntype_hetero_nids[homo_u]
+                hetero_v_ntype, hetero_v_nid = homo_nids_to_ntype_hetero_nids[homo_v]
+                can_etype = ntype_pairs_to_cannonical_etypes[(hetero_u_ntype, hetero_v_ntype)]
+                hetero_path += [(can_etype, hetero_u_nid, hetero_v_nid)]
+            paths += [hetero_path]
+
+    else:
+        # A rare case, no paths found, take the top edges
+        print("[get_paths]cant find paths")
+        cat_edge_mask = torch.cat([v for v in eweight_dict.values()])
+        M = len(cat_edge_mask)
+        k = min(num_paths * max_path_length, M)
+        threshold = cat_edge_mask.topk(k)[0][-1].item()
+        path = []
+        for etype in eweight_dict:
+            u, v = ghetero.edges(etype=etype)
+            topk_edge_mask = eweight_dict[etype] >= threshold
+            path += list(zip([etype] * topk_edge_mask.sum().item(), u[topk_edge_mask].tolist(), v[topk_edge_mask].tolist()))
+        paths = [path]
+    return paths
+
+def comp_g_paths_to_paths(comp_g, comp_g_paths):
+    paths = []
+    g_nids = comp_g.ndata[dgl.NID]
+    for comp_g_path in comp_g_paths:
+        path = []
+        for can_etype, u, v in comp_g_path:
+            u_ntype, _, v_ntype = can_etype
+            path += [(can_etype, g_nids[u_ntype][u].item(), g_nids[v_ntype][v].item())]
+        paths += [path]
+    return paths
+
+
+def get_mask_delta(g, mask1=None, mask2=None):
+    """
+    计算两个掩码之间的差值 (mask3 = mask2 - mask1)。
+
+    参数:
+    ----
+    g : DGLGraph 当前的异构图对象，用于在掩码为 None 时获取各关系的边数和设备信息。
+    mask1 : dict[etype, Tensor] or None 第一个掩码字典。若为 None，则每条边的掩码默认为 1。
+    mask2 : dict[etype, Tensor] or None 第二个掩码字典。若为 None，则每条边的掩码默认为 1。
+
+    返回:
+    ----
+    mask3 : dict[etype, Tensor]
+        作差后的掩码字典，保留所有结果（包括负数和 0）。
+    """
+    mask3 = {}
+    device = g.device
+
+    # 遍历图中所有的规范关系类型 (canonical_etypes)
+    for etype in g.canonical_etypes:
+        num_edges = g.num_edges(etype)
+        # --- 处理 mask1 ---
+        if mask1 is None or etype not in mask1:
+            m1 = torch.ones(num_edges, device=device) # 如果传入为 None，每条边掩码默认为 1
+        else: m1 = mask1[etype]
+        # --- 处理 mask2 ---
+        if mask2 is None or etype not in mask2:
+            m2 = torch.ones(num_edges, device=device)
+        else: m2 = mask2[etype]
+
+        # --- 执行作差计算：mask3 = mask2 - mask1 ---
+        mask3[etype] = m2 - m1 # 直接相减，保留负数、0 以及正数
+
+    return mask3
+
 
 '''
 Plotting utils
@@ -1119,9 +1224,11 @@ def get_homo_nid_pairs_to_etypes(ghetero):
 
 
 
+
 '''
 Running utils
 '''
+
 def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs=4,
                             nbh_n_samples=10, nbh_radius=0.5, num_hops=2, dataset_name="lastfm",
                             num_epochs=25, device=None, is_save_excel=None, is_save_explanation=None):
@@ -1136,9 +1243,12 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
     """
     # （只有is_save_excel时）创建 Excel 写入器
     writer = None
-    output_dir = "outputs/EXCELS"
+    output_dir = "outputs/EXCELS/lambda1_0.1_lambda2_0.1"
+    #output_dir = "outputs/EXCELS/paths3"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    excel_filename = f"{dataset_name}_pairs{nbh_n_samples}_epochs{num_epochs}_radius{nbh_radius}_{timestamp}.xlsx"
+    r_seed = 5678
+    excel_filename = f"{dataset_name}_enum{num_explain}_seed{r_seed}_epochs{num_epochs}_lambda{able_g.get_lambda(1)}_{able_g.get_lambda(2)}_radius{nbh_radius}_{timestamp}.xlsx"
+    #excel_filename = f"{dataset_name}_lambda{able_g.get_lambda(1)}_{able_g.get_lambda(2)}_pairs{nbh_n_samples}_{timestamp}.xlsx"
     full_path = os.path.join(output_dir, excel_filename)  # 组合成 outputs/文件名.xlsx
     if is_save_excel:
         writer = pd.ExcelWriter(full_path, engine='openpyxl')
@@ -1147,6 +1257,8 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
     all_debug_info = []
     run_summary_data = []
     sample_summary_data = []
+    all_path_excel_data = [] # 存储路径掩码信息
+    all_sparsity_excel_data = []
 
     src_nids, tgt_nids = test_pos_g.edges()
     num_test = src_nids.shape[0]
@@ -1154,6 +1266,8 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
     run_means_M = []
     run_means_W = []
     run_means_Cond =[]
+
+    chose_pred_1 = 0
 
     print(f"[evaluate_random_runs] Starting evaluation with {n_runs} runs")
     print(f"[evaluate_random_runs] Total test samples: {num_test}")
@@ -1163,7 +1277,7 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
     for run in range(n_runs):
         # 随机抽样 num_explain 个样本
         ids = list(range(num_test))
-        random.seed(run + 12345)
+        random.seed(r_seed)
         sample_ids = random.sample(ids, min(num_explain, num_test))
 
         print(f"\n[Run {run + 1}/{n_runs}] Sampling {len(sample_ids)} test samples")
@@ -1175,6 +1289,8 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
         run_start_time = datetime.now()
 
         for sample_idx, idx in enumerate(sample_ids):
+            # if chose_pred_1>=20:
+            #     break
             # --- 新增：原地替换逻辑 ---
             while True:
                 src_nid = src_nids[idx].to(device)
@@ -1346,9 +1462,19 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
                     "status": "SUCCESS"
                 }
                 sample_summary_data.append(sample_summary)
-                if is_save_explanation:
-                    visualize_neighborhood_tsne(model, exres)
-                    #draw_able_graph_eweight(exres, dataset_name)
+                if is_save_explanation and adv_pairs[0]["y"]==1 and flip_rate_M>0.7 and chose_pred_1>=30:
+                    chose_pred_1 = chose_pred_1 + 1
+                    #draw_able_weight_path(exres, dataset_name, idx)
+                    path_info, sparsity_info = count_able_weight_path(exres, dataset_name, idx)
+                    if path_info: all_path_excel_data.extend(path_info)
+                    if sparsity_info: all_sparsity_excel_data.extend(sparsity_info)
+                    print(f"[{dataset_name}] draw sample : {idx}")
+
+                    # if chose_pred_1>4:
+                    #     #visualize_neighborhood_tsne(model, exres, f"{dataset_name}{idx}")
+                    #     #draw_able_graph_eweight(exres, dataset_name)
+                    #     draw_able_weight_path(exres, dataset_name, idx)
+                    #     print(f"[{dataset_name}] draw sample : {idx}")
                 else:
                     print(print("\n[INFO] skipping explanation_graph export."))
             else:
@@ -1515,6 +1641,15 @@ def evaluate_random_runs_ex(able_g, model, mp_g, test_pos_g, num_explain, n_runs
             df_final_summary = pd.DataFrame(final_summary_data)
             df_final_summary.to_excel(writer, sheet_name='Final_Summary', index=False, header=False)
             print(f"Saved final summary to Final_Summary sheet")
+
+            if all_path_excel_data:
+                df_paths = pd.DataFrame(all_path_excel_data)
+                df_paths.to_excel(writer, sheet_name='Path_Mask_Weights', index=False)
+                print(f"Saved {len(df_paths)} path mask entries to Path_Mask_Weights sheet")
+            if all_sparsity_excel_data:
+                df_sparsity = pd.DataFrame(all_sparsity_excel_data)
+                df_sparsity.to_excel(writer, sheet_name='Sparsity_Info', index=False)
+                print(f"Saved {len(df_paths)} sparsity records entries to Sparsity_Info sheet")
 
             # 保存Excel文件
             writer.close()
